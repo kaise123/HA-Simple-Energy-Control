@@ -1,0 +1,221 @@
+title: Energy Management
+views:
+  - title: Import/Export Automation Control
+    icon: mdi:solar-power
+    cards:
+      # --- SYSTEM STATUS & MASTER SWITCH ---
+      - type: entities
+        title: System Status
+        entities:
+          - entity: input_boolean.amber_automation_enabled
+            name: Master Automation Switch
+          - entity: input_text.amber_active_tier_status
+            name: Current System Status
+            icon: mdi:information-outline
+
+      # --- VISUAL GRAPHS ---
+      - type: custom:power-flow-card-plus
+        title: Live Power Flow
+        entities:
+          home:
+            entity: sensor.shelly_ct1_power
+          battery:
+            entity: sensor.alphaess_power_battery
+            state_of_charge: sensor.alphaess_soc_battery
+            invert_state: true 
+          grid:
+            entity: sensor.alphaess_power_grid
+            invert_state: false 
+          solar:
+            entity: sensor.alphaess_current_pv_production
+            display_zero_state: true
+        clickable_entities: true
+        display_zero_lines: true
+        use_new_flow_rate_model: true
+        w_decimals: 0
+        kw_decimals: 2
+        
+      - type: custom:apexcharts-card
+        header:
+          show: true
+          title: Amber Price Trends
+          show_states: true
+          colorize_states: true
+        graph_span: 24h
+        span:
+          start: day
+        now:
+          show: true
+          label: Now
+          color: red
+        series:
+          - entity: sensor.amber_express_home_general_price
+            name: Import Price
+            type: line
+            curve: smooth
+            color: '#e74c3c'
+            extend_to: now
+          - entity: sensor.amber_express_home_feed_in_price
+            name: Feed-in Price
+            type: area
+            curve: smooth
+            color: '#2ecc71'
+            opacity: 0.3
+            extend_to: now
+
+      # --- EXPORT RULES (DYNAMIC) ---
+      - type: vertical-stack
+        cards:
+          - type: markdown
+            content: >
+              ### 📤 Export Tiers (Selling to Grid)
+              
+              These rules dictate when the system will automatically dump power to the grid. The highest battery tier matched takes priority.
+              
+              **Your Current Active Rules:**
+              
+              {% if is_state('input_boolean.amber_export_tier_1_enabled', 'on') %}✅{% else %}❌{% endif %} **Tier 1:** When battery is over **{{ states('input_number.amber_export_soc_1') }}%**, export if feed-in is above **${{ states('input_number.amber_export_price_1') }}**.
+              
+              {% if is_state('input_boolean.amber_export_tier_2_enabled', 'on') %}✅{% else %}❌{% endif %} **Tier 2:** When battery is over **{{ states('input_number.amber_export_soc_2') }}%**, export if feed-in is above **${{ states('input_number.amber_export_price_2') }}**.
+              
+              {% if is_state('input_boolean.amber_export_tier_3_enabled', 'on') %}✅{% else %}❌{% endif %} **Tier 3:** When battery is over **{{ states('input_number.amber_export_soc_3') }}%**, export if feed-in is above **${{ states('input_number.amber_export_price_3') }}**.
+          - type: entities
+            entities:
+              - type: section
+                label: Tier 1 (Highest SOC)
+              - entity: input_boolean.amber_export_tier_1_enabled
+              - entity: input_number.amber_export_soc_1
+                name: "If SOC % is greater than:"
+              - entity: input_number.amber_export_price_1
+                name: "Export if price ($) is above:"
+              - type: section
+                label: Tier 2 (Mid SOC)
+              - entity: input_boolean.amber_export_tier_2_enabled
+              - entity: input_number.amber_export_soc_2
+                name: "If SOC % is greater than:"
+              - entity: input_number.amber_export_price_2
+                name: "Export if price ($) is above:"
+              - type: section
+                label: Tier 3 (Low SOC)
+              - entity: input_boolean.amber_export_tier_3_enabled
+              - entity: input_number.amber_export_soc_3
+                name: "If SOC % is greater than:"
+              - entity: input_number.amber_export_price_3
+                name: "Export if price ($) is above:"
+
+      # --- IMPORT RULES (DYNAMIC) ---
+      - type: vertical-stack
+        cards:
+          - type: markdown
+            content: >
+              ### 📥 Import Tiers (Charging from Grid)
+              
+              These rules dictate when the system will automatically charge from the grid, which is ideal for capturing negative prices.
+              
+              **Your Current Active Rules:**
+              
+              {% if is_state('input_boolean.amber_import_tier_1_enabled', 'on') %}✅{% else %}❌{% endif %} **Tier 1:** When battery is below **{{ states('input_number.amber_import_soc_1') }}%**, force-charge if import price is below **${{ states('input_number.amber_import_price_1') }}**.
+              
+              {% if is_state('input_boolean.amber_import_tier_2_enabled', 'on') %}✅{% else %}❌{% endif %} **Tier 2:** When battery is below **{{ states('input_number.amber_import_soc_2') }}%**, force-charge if import price is below **${{ states('input_number.amber_import_price_2') }}**.
+          - type: entities
+            entities:
+              - type: section
+                label: Tier 1 (Lowest SOC)
+              - entity: input_boolean.amber_import_tier_1_enabled
+              - entity: input_number.amber_import_soc_1
+                name: "If SOC % is less than:"
+              - entity: input_number.amber_import_price_1
+                name: "Charge if price ($) is below:"
+              - type: section
+                label: Tier 2 (Mid SOC)
+              - entity: input_boolean.amber_import_tier_2_enabled
+              - entity: input_number.amber_import_soc_2
+                name: "If SOC % is less than:"
+              - entity: input_number.amber_import_price_2
+                name: "Charge if price ($) is below:"
+
+      # --- PREDICTIVE LOGIC & FORECASTING ---
+      - type: vertical-stack
+        cards:
+          - type: markdown
+            content: >
+              ### 🔮 Predictive Battery Hold (12hr Forecast)
+              
+              These overrides will dynamically **disable** your Export or Import tiers above to save your battery capacity if a significantly better price is forecasted in the next 12 hours.
+              
+              {% if is_state('input_boolean.amber_predictive_export_hold', 'on') and states('sensor.amber_max_export_forecast_12h')|float >= states('input_number.amber_export_forecast_threshold')|float %}
+              🛑 **EXPORT BLOCKED:** A massive spike of **${{ states('sensor.amber_max_export_forecast_12h') }}** is coming! Exports are paused to save battery.
+              {% elif is_state('input_boolean.amber_predictive_import_hold', 'on') and states('sensor.amber_min_import_forecast_12h')|float <= states('input_number.amber_import_forecast_threshold')|float %}
+              🛑 **IMPORT BLOCKED:** A massive drop to **${{ states('sensor.amber_min_import_forecast_12h') }}** is coming! Charging is paused to wait for cheaper prices.
+              {% else %}
+              🟢 **No overrides active.** Forecasts are within normal parameters.
+              {% endif %}
+          - type: entities
+            entities:
+              - type: section
+                label: 12-Hour Forecast Data
+              - entity: sensor.amber_max_export_forecast_12h
+                name: Highest Forecasted Export Price
+              - entity: sensor.amber_min_import_forecast_12h
+                name: Lowest Forecasted Import Price
+              - type: section
+                label: Predictive Export Override
+              - entity: input_boolean.amber_predictive_export_hold
+              - entity: input_number.amber_export_forecast_threshold
+              - type: section
+                label: Predictive Import Override
+              - entity: input_boolean.amber_predictive_import_hold
+              - entity: input_number.amber_import_forecast_threshold
+
+      # --- HYSTERESIS ---
+      - type: vertical-stack
+        cards:
+          - type: markdown
+            content: >
+              ### ↕️ Logic Tuning (Hysteresis)
+              
+              Hysteresis prevents the system from rapidly flickering on and off when prices hover exactly on your target.
+              
+              **Current Setting:** The price must pass your target by **${{ states('input_number.amber_price_hysteresis') }}** before the automation will trigger.
+          - type: entities
+            entities:
+              - entity: input_number.amber_price_hysteresis
+                name: Hysteresis Buffer ($)
+
+      # --- MANUAL CONTROLS & MODBUS EXPLANATIONS ---
+      - type: vertical-stack
+        cards:
+          - type: markdown
+            content: >
+              ### 🛠️ Modbus Manual Controls
+              
+              Use these controls to manually override the automation. Below is a guide to what each dispatch mode actually does to your AlphaESS system:
+              <br><br>
+              **1 - Battery only Charges from PV**<br>
+              Prevents the battery from charging from the grid under any circumstances.
+              <br><br>
+              **2 - State of Charge Control**<br>
+              Forces the battery to charge from the grid. *(Used by automation for cheap imports).*
+              <br><br>
+              **3 - Load Following**<br>
+              Battery discharges to match house load exactly, preventing accidental export.
+              <br><br>
+              **4 - Maximise Output**<br>
+              Forces the battery to discharge at maximum capacity to the grid. *(Used by automation for price spikes).*
+              <br><br>
+              **5 - Normal Mode**<br>
+              Default behavior. Solar charges battery first, then covers house load, then exports excess.
+              <br><br>
+              **6 & 7 - Optimise / Maximise Consumption**<br>
+              Prioritizes using solar and battery for the house load over exporting.
+              <br><br>
+              **19 - No Battery Charge**<br>
+              Completely prevents the battery from charging.
+          - type: entities
+            entities:
+              - entity: input_select.alphaess_helper_dispatch_mode
+                name: Current Dispatch Mode
+              - entity: input_boolean.alphaess_helper_dispatch
+                name: Force Dispatch Active
+              - entity: input_button.alphaess_helper_dispatch_reset_full
+                name: Reset to Normal Mode
