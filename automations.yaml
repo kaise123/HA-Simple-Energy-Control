@@ -22,14 +22,16 @@
         enabled: "{{ is_state('input_boolean.amber_automation_enabled', 'on') }}"
         current_status: "{{ states('input_text.amber_active_tier_status') }}"
         
-        # 2. Predictive Hold Logic
+        # 2. Predictive Hold Logic (With Absolute Overrides)
         pred_exp_active: >
           {{ is_state('input_boolean.amber_predictive_export_hold', 'on') 
-             and states('sensor.amber_max_export_forecast_12h')|float(0) >= states('input_number.amber_export_forecast_threshold')|float(99) }}
+             and states('sensor.amber_max_export_forecast_12h')|float(0) >= states('input_number.amber_export_forecast_threshold')|float(99) 
+             and export_price < states('input_number.amber_export_absolute_override')|float(99) }}
         
         pred_imp_active: >
           {{ is_state('input_boolean.amber_predictive_import_hold', 'on') 
-             and states('sensor.amber_min_import_forecast_12h')|float(0) <= states('input_number.amber_import_forecast_threshold')|float(-99) }}
+             and states('sensor.amber_min_import_forecast_12h')|float(0) <= states('input_number.amber_import_forecast_threshold')|float(-99)
+             and import_price > states('input_number.amber_import_absolute_override')|float(-99) }}
 
         # 3. Evaluate which rules match (Only evaluates if predictive holds are NOT active)
         t1_exp: "{{ enabled and not pred_exp_active and is_state('input_boolean.amber_export_tier_1_enabled', 'on') and soc >= states('input_number.amber_export_soc_1')|float(100) and export_price >= (states('input_number.amber_export_price_1')|float(99) + hysteresis) }}"
