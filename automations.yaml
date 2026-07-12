@@ -1,0 +1,144 @@
+# automations.yaml
+- id: 'alphaess_amber_optimization_tiered'
+  alias: "Energy: AlphaESS Amber Dispatch Optimization (Tiered)"
+  description: "Maximise Amber Electric profits with multi-tier SOC rules, predictive holds, and status tracking"
+  mode: single
+  
+  trigger:
+    - platform: state
+      entity_id: 
+        - sensor.amber_express_home_general_price
+        - sensor.amber_express_home_feed_in_price
+        - sensor.alphaess_soc_battery
+        - input_boolean.amber_automation_enabled
+        
+  action:
+    - variables:
+        # 1. Fetch current states
+        soc: "{{ states('sensor.alphaess_soc_battery') | float(0) }}"
+        import_price: "{{ states('sensor.amber_express_home_general_price') | float(0) }}"
+        export_price: "{{ states('sensor.amber_express_home_feed_in_price') | float(0) }}"
+        hysteresis: "{{ states('input_number.amber_price_hysteresis') | float(0) }}"
+        enabled: "{{ is_state('input_boolean.amber_automation_enabled', 'on') }}"
+        current_status: "{{ states('input_text.amber_active_tier_status') }}"
+        
+        # 2. Predictive Hold Logic
+        pred_exp_active: >
+          {{ is_state('input_boolean.amber_predictive_export_hold', 'on') 
+             and states('sensor.amber_max_export_forecast_12h')|float(0) >= states('input_number.amber_export_forecast_threshold')|float(99) }}
+        
+        pred_imp_active: >
+          {{ is_state('input_boolean.amber_predictive_import_hold', 'on') 
+             and states('sensor.amber_min_import_forecast_12h')|float(0) <= states('input_number.amber_import_forecast_threshold')|float(-99) }}
+
+        # 3. Evaluate which rules match (Only evaluates if predictive holds are NOT active)
+        t1_exp: "{{ enabled and not pred_exp_active and is_state('input_boolean.amber_export_tier_1_enabled', 'on') and soc >= states('input_number.amber_export_soc_1')|float(100) and export_price >= (states('input_number.amber_export_price_1')|float(99) + hysteresis) }}"
+        t2_exp: "{{ enabled and not pred_exp_active and is_state('input_boolean.amber_export_tier_2_enabled', 'on') and soc >= states('input_number.amber_export_soc_2')|float(100) and export_price >= (states('input_number.amber_export_price_2')|float(99) + hysteresis) }}"
+        t3_exp: "{{ enabled and not pred_exp_active and is_state('input_boolean.amber_export_tier_3_enabled', 'on') and soc >= states('input_number.amber_export_soc_3')|float(100) and export_price >= (states('input_number.amber_export_price_3')|float(99) + hysteresis) }}"
+
+        t1_imp: "{{ enabled and not pred_imp_active and is_state('input_boolean.amber_import_tier_1_enabled', 'on') and soc <= states('input_number.amber_import_soc_1')|float(0) and import_price <= (states('input_number.amber_import_price_1')|float(-99) - hysteresis) }}"
+        t2_imp: "{{ enabled and not pred_imp_active and is_state('input_boolean.amber_import_tier_2_enabled', 'on') and soc <= states('input_number.amber_import_soc_2')|float(0) and import_price <= (states('input_number.amber_import_price_2')|float(-99) - hysteresis) }}"
+        
+        # 4. Determine Active Action
+        active_action: >
+          {% if not enabled %} disabled
+          {% elif pred_exp_active and (export_price >= states('input_number.amber_export_price_3')|float(99)) %} holding_export
+          {% elif pred_imp_active and (import_price <= states('input_number.amber_import_price_1')|float(-99)) %} holding_import
+          {% elif t1_exp %} export_1
+          {% elif t2_exp %} export_2
+          {% elif t3_exp %} export_3
+          {% elif t1_imp %} import_1
+          {% elif t2_imp %} import_2
+          {% else %} idle {% endif %}
+          
+        # 5. Generate Status String
+        new_status_text: >
+          {% if not enabled %} 🔴 Automation Disabled
+          {% elif active_action == 'holding_export' %} 🛑 Holding Exports (Spike Forecasted!)
+          {% elif active_action == 'holding_import' %} 🛑 Holding Imports (Drop Forecasted!)
+          {% elif t1_exp %} 📤 Exporting (Tier 1)
+          {% elif t2_exp %} 📤 Exporting (Tier 2)
+          {% elif t3_exp %} 📤 Exporting (Tier 3)
+          {% elif t1_imp %} 📥 Importing (Tier 1)
+          {% elif t2_imp %} 📥 Importing (Tier 2)
+          {% else %} 🟢 Idle (Normal Mode) {% endif %}
+
+    # Update Dashboard Status Indicator
+    - service: input_text.set_value
+      target:
+        entity_id: input_text.amber_active_tier_status
+      data:
+        value: "{{ new_status_text }}"
+
+    - choose:
+        # --- EXPORT TRIGGER ---
+        - conditions:
+            - condition: template
+              value_template: "{{ active_action in ['export_1', 'export_2', 'export_3'] }}"
+            - condition: template
+              value_template: "{{ soc > 10 }}" 
+          sequence:
+            - if:
+                - condition: template
+                  value_template: "{{ current_status != new_status_text }}"
+              then:
+                - service: notify.mobile_app_phone
+                  data:
+                    title: "📈 Amber Export Initiated!"
+                    message: "{{ new_status_text }} - Feed-in is ${{ export_price }}/kWh (SOC: {{ soc }}%)."
+            - service: input_select.select_option
+              target:
+                entity_id: input_select.alphaess_helper_dispatch_mode
+              data:
+                option: "Maximise Output (4)"
+            - service: input_number.set_value
+              target:
+                entity_id: input_number.alphaess_helper_dispatch_duration
+              data:
+                value: 30 
+            - service: input_boolean.turn_on
+              target:
+                entity_id: input_boolean.alphaess_helper_dispatch
+
+        # --- IMPORT TRIGGER ---
+        - conditions:
+            - condition: template
+              value_template: "{{ active_action in ['import_1', 'import_2'] }}"
+            - condition: template
+              value_template: "{{ soc < 98 }}" 
+          sequence:
+            - if:
+                - condition: template
+                  value_template: "{{ current_status != new_status_text }}"
+              then:
+                - service: notify.mobile_app_phone
+                  data:
+                    title: "📉 Amber Import Initiated!"
+                    message: "{{ new_status_text }} - Import is ${{ import_price }}/kWh (SOC: {{ soc }}%)."
+            - service: input_select.select_option
+              target:
+                entity_id: input_select.alphaess_helper_dispatch_mode
+              data:
+                option: "State of Charge Control (2)"
+            - service: input_number.set_value
+              target:
+                entity_id: input_number.alphaess_helper_dispatch_duration
+              data:
+                value: 30 
+            - service: input_boolean.turn_on
+              target:
+                entity_id: input_boolean.alphaess_helper_dispatch
+
+      # --- IDLE / DISABLED / HOLDING (RETURN TO NORMAL) ---
+      default:
+        - if:
+            - condition: template
+              value_template: "{{ current_status != new_status_text and new_status_text == '🟢 Idle (Normal Mode)' }}"
+          then:
+            - service: notify.mobile_app_phone
+              data:
+                title: "🔄 Automation Reset"
+                message: "Prices have normalized. Returning to standard self-consumption."
+        - service: input_button.press
+          target:
+            entity_id: input_button.alphaess_helper_dispatch_reset_full
