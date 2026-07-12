@@ -1,6 +1,8 @@
-# Home Assistant: Amber Electric and AlphaESS Optimizer
+# Home Assistant Simple Energy Control
 
 An automated energy management configuration for Home Assistant. This project controls an AlphaESS battery system using live and forecasted wholesale electricity prices from Amber Electric. It uses multi-tier State of Charge (SOC) rules, predictive 12-hour forecasting, and Modbus dispatch controls to optimize battery charging during low-price periods and grid exporting during high-price events.
+
+This can easily be adapted to work with other battery systems and energy providers - but in this state is set up for AlphaESS and Amber Electric.
 
 ## Features
 
@@ -17,9 +19,9 @@ An automated energy management configuration for Home Assistant. This project co
 Before implementing this configuration, ensure the following integrations and frontend components are installed and configured in your Home Assistant instance:
 
 ### Integrations
-1. **[Amber Electric](https://www.home-assistant.io/integrations/amber/)**: Official integration configured for your site.
-2. **AlphaESS Modbus**: The AlphaESS inverter must be configured for local Modbus control. This automation relies on the specific `input_select`, `input_number`, and `input_boolean` helper entities used to trigger AlphaESS dispatch modes.
-3. **Home Energy Monitor**: A sensor monitoring total site consumption (this guide uses a Shelly CT1 as an example).
+1. **[Amber Express](https://github.com/hass-energy/amber-express)**: Amber Express integration configured with your API key.
+2. **AlphaESS Modbus**: The AlphaESS inverter must be configured for local Modbus control. This automation relies on the specific `input_select`, `input_number`, and `input_boolean` helper entities used to trigger AlphaESS dispatch modes. Specifically, I have used https://projects.hillviewlodge.ie/alphaess/ to integrate AlphaESS with Home Assistant using Modbus.
+3. **Home Energy Monitor**: A sensor monitoring total site consumption (this project uses a Shelly EM as an example - but any sensor reporting watts will do).
 
 ### Frontend Cards (HACS)
 The dashboard requires the following custom cards, available via the Home Assistant Community Store (HACS):
@@ -34,10 +36,10 @@ The dashboard requires the following custom cards, available via the Home Assist
 Before copying the configuration files, execute a find-and-replace to map the template entity IDs to your specific Home Assistant environment. 
 
 Key entities to update:
-* `sensor.amber_express_12_barton_court_general_price` -> Replace with your Amber General/Import price sensor.
-* `sensor.amber_express_12_barton_court_feed_in_price` -> Replace with your Amber Feed-in/Export price sensor.
+* `sensor.amber_express_home_general_price` -> Replace with your Amber General/Import price sensor.
+* `sensor.amber_express_home_feed_in_price` -> Replace with your Amber Feed-in/Export price sensor.
 * `sensor.shelly_ct1_power` -> Replace with your home consumption sensor.
-* `notify.mobile_app_kw_s24u` -> Replace with your specific mobile app notification service.
+* `notify.mobile_app_phone` -> Replace with your specific mobile app notification service.
 
 ### 2. Configuration Helpers (`configuration.yaml`)
 The automation relies on several helper entities (Input Booleans, Input Numbers, Input Texts) and Template Sensors. 
@@ -70,6 +72,3 @@ When enabled, the system evaluates the `forecasts` attribute of the Amber sensor
 The Master Automation Switch disables the script entirely. Manual controls at the bottom of the dashboard can then be used to dictate specific Modbus dispatch modes. Clicking "Reset to Normal Mode" clears all overrides and returns the inverter to standard self-consumption (Mode 5).
 
 ---
-
-## Disclaimer
-This project is provided as-is. Wholesale electricity markets are highly volatile. Misconfigurations, network dropouts to your inverter, or external API outages could result in unintended behavior, such as discharging the battery during negative feed-in periods or charging during price spikes. Use at your own financial risk.
