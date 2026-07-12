@@ -134,38 +134,46 @@ views:
               - entity: input_number.amber_import_price_2
                 name: "Charge if price ($) is below:"
 
-      # --- PREDICTIVE LOGIC & FORECASTING ---
+# --- PREDICTIVE LOGIC & FORECASTING ---
       - type: vertical-stack
         cards:
           - type: markdown
             content: >
-              ### 🔮 Predictive Battery Hold (12hr Forecast)
+              ### 🔮 Predictive Battery Hold
               
-              These overrides will dynamically **disable** your Export or Import tiers above to save your battery capacity if a significantly better price is forecasted in the next 12 hours.
+              These overrides pause your Export or Import tiers if a massive price event is forecasted **between 1 and 12 hours from now** (ignoring the current hour).
               
-              {% if is_state('input_boolean.amber_predictive_export_hold', 'on') and states('sensor.amber_max_export_forecast_12h')|float >= states('input_number.amber_export_forecast_threshold')|float %}
-              🛑 **EXPORT BLOCKED:** A massive spike of **${{ states('sensor.amber_max_export_forecast_12h') }}** is coming! Exports are paused to save battery.
-              {% elif is_state('input_boolean.amber_predictive_import_hold', 'on') and states('sensor.amber_min_import_forecast_12h')|float <= states('input_number.amber_import_forecast_threshold')|float %}
-              🛑 **IMPORT BLOCKED:** A massive drop to **${{ states('sensor.amber_min_import_forecast_12h') }}** is coming! Charging is paused to wait for cheaper prices.
+              **Absolute Release:** If the live price crosses your Absolute Release threshold, the hold is instantly destroyed and your normal tiers engage.
+              
+              {% if is_state('input_boolean.amber_predictive_export_hold', 'on') and states('sensor.amber_max_export_forecast_12h')|float >= states('input_number.amber_export_forecast_threshold')|float and states('sensor.amber_express_home_feed_in_price')|float < states('input_number.amber_export_absolute_override')|float %}
+              🛑 **EXPORT BLOCKED:** A future spike of **${{ states('sensor.amber_max_export_forecast_12h') }}** is coming! Exports are paused unless the live price hits **${{ states('input_number.amber_export_absolute_override') }}**.
+              {% elif is_state('input_boolean.amber_predictive_import_hold', 'on') and states('sensor.amber_min_import_forecast_12h')|float <= states('input_number.amber_import_forecast_threshold')|float and states('sensor.amber_express_home_general_price')|float > states('input_number.amber_import_absolute_override')|float %}
+              🛑 **IMPORT BLOCKED:** A future drop to **${{ states('sensor.amber_min_import_forecast_12h') }}** is coming! Charging is paused unless the live price hits **${{ states('input_number.amber_import_absolute_override') }}**.
               {% else %}
-              🟢 **No overrides active.** Forecasts are within normal parameters.
+              🟢 **No holds active.** Future forecasts are normal, or an Absolute Release was triggered.
               {% endif %}
           - type: entities
             entities:
               - type: section
-                label: 12-Hour Forecast Data
+                label: "Future Forecast Data (1h to 12h)"
               - entity: sensor.amber_max_export_forecast_12h
-                name: Highest Forecasted Export Price
+                name: Highest Future Export Price
               - entity: sensor.amber_min_import_forecast_12h
-                name: Lowest Forecasted Import Price
+                name: Lowest Future Import Price
               - type: section
                 label: Predictive Export Override
               - entity: input_boolean.amber_predictive_export_hold
               - entity: input_number.amber_export_forecast_threshold
+                name: Hold if Future Spike >
+              - entity: input_number.amber_export_absolute_override
+                name: Release Hold if Live Price >
               - type: section
                 label: Predictive Import Override
               - entity: input_boolean.amber_predictive_import_hold
               - entity: input_number.amber_import_forecast_threshold
+                name: Hold if Future Drop <
+              - entity: input_number.amber_import_absolute_override
+                name: Release Hold if Live Price <
 
       # --- HYSTERESIS ---
       - type: vertical-stack
