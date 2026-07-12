@@ -1,25 +1,27 @@
 template:
   - sensor:
-      # Scans the next 12 hours (24 x 30min blocks) of Export forecasts to find the highest price
+      # Scans the forecast array up to 12 hours ahead to find the highest Export price
       - name: "Amber Max Export Forecast 12h"
         unit_of_measurement: "$/kWh"
         icon: mdi:chart-line-variant
         state: >
-          {% set forecasts = state_attr('sensor.amber_express_home_feed_in_price', 'forecasts') %}
-          {% if forecasts %}
-            {{ forecasts[:24] | map(attribute='per_kwh') | max | float(0) }}
+          {% set fcast = state_attr('sensor.amber_express_home_feed_in_price', 'forecast') %}
+          {% if fcast %}
+            {% set limit = (now() + timedelta(hours=12)).isoformat() %}
+            {{ fcast | selectattr('time', '<=', limit) | map(attribute='value') | max | float(0) }}
           {% else %}
             0
           {% endif %}
           
-      # Scans the next 12 hours of Import forecasts to find the lowest price
+      # Scans the forecast array up to 12 hours ahead to find the lowest Import price
       - name: "Amber Min Import Forecast 12h"
         unit_of_measurement: "$/kWh"
         icon: mdi:chart-line-variant
         state: >
-          {% set forecasts = state_attr('sensor.amber_express_home_general_price', 'forecasts') %}
-          {% if forecasts %}
-            {{ forecasts[:24] | map(attribute='per_kwh') | min | float(0) }}
+          {% set fcast = state_attr('sensor.amber_express_home_general_price', 'forecast') %}
+          {% if fcast %}
+            {% set limit = (now() + timedelta(hours=12)).isoformat() %}
+            {{ fcast | selectattr('time', '<=', limit) | map(attribute='value') | min | float(0) }}
           {% else %}
             0
           {% endif %}
