@@ -385,6 +385,8 @@ automation:
           # --- EXPORT TRIGGER ---
           # Activates Maximise Output (Mode 4) for 30 min when an export
           # tier condition is met and the battery has charge to give.
+          # Dispatch commands are only sent when the active state has changed —
+          # re-triggers with no state change update the status text only.
           - conditions:
               - condition: template
                 value_template: "{{ active_action in ['export_1', 'export_2', 'export_3'] }}"
@@ -399,25 +401,27 @@ automation:
                     data:
                       title: "📈 Amber Export Initiated!"
                       message: "{{ new_status_text }} - Feed-in is ${{ export_price }}/kWh (SOC: {{ soc }}%)."
-              - service: input_select.select_option
-                target:
-                  entity_id: input_select.alphaess_helper_dispatch_mode
-                data:
-                  option: "Maximise Output (4)"
-              - service: input_number.set_value
-                target:
-                  entity_id: input_number.alphaess_helper_dispatch_duration
-                data:
-                  value: 30
-              - service: input_boolean.turn_on
-                target:
-                  entity_id: input_boolean.alphaess_helper_dispatch
+                  - service: input_select.select_option
+                    target:
+                      entity_id: input_select.alphaess_helper_dispatch_mode
+                    data:
+                      option: "Maximise Output (4)"
+                  - service: input_number.set_value
+                    target:
+                      entity_id: input_number.alphaess_helper_dispatch_duration
+                    data:
+                      value: 30
+                  - service: input_boolean.turn_on
+                    target:
+                      entity_id: input_boolean.alphaess_helper_dispatch
 
           # --- IMPORT TRIGGER ---
           # Activates Optimise Consumption (Mode 6) for 30 min when an import
           # tier condition is met and the battery is not already full.
           # Mode 6: force-charges the battery at full power from the grid;
           # house load served by grid; PV output also contributes.
+          # Dispatch commands are only sent when the active state has changed —
+          # re-triggers with no state change update the status text only.
           - conditions:
               - condition: template
                 value_template: "{{ active_action in ['import_1', 'import_2'] }}"
@@ -432,31 +436,37 @@ automation:
                     data:
                       title: "📉 Amber Import Initiated!"
                       message: "{{ new_status_text }} - Import is ${{ import_price }}/kWh (SOC: {{ soc }}%)."
-              - service: input_select.select_option
-                target:
-                  entity_id: input_select.alphaess_helper_dispatch_mode
-                data:
-                  option: "Optimise Consumption (6)"
-              - service: input_number.set_value
-                target:
-                  entity_id: input_number.alphaess_helper_dispatch_duration
-                data:
-                  value: 30
-              - service: input_boolean.turn_on
-                target:
-                  entity_id: input_boolean.alphaess_helper_dispatch
+                  - service: input_select.select_option
+                    target:
+                      entity_id: input_select.alphaess_helper_dispatch_mode
+                    data:
+                      option: "Optimise Consumption (6)"
+                  - service: input_number.set_value
+                    target:
+                      entity_id: input_number.alphaess_helper_dispatch_duration
+                    data:
+                      value: 30
+                  - service: input_boolean.turn_on
+                    target:
+                      entity_id: input_boolean.alphaess_helper_dispatch
 
         # --- IDLE / DISABLED / HOLDING (RETURN TO NORMAL) ---
         # Resets the inverter to standard self-consumption via the reset button.
+        # Only fires on the transition to idle — not on every idle re-trigger.
         default:
           - if:
               - condition: template
-                value_template: "{{ current_status != new_status_text and new_status_text == '🟢 Idle (Normal Mode)' }}"
+                value_template: "{{ current_status != new_status_text }}"
             then:
-              - service: notify.mobile_app_phone   # ← update to your device
-                data:
-                  title: "🔄 HA Simple Energy Control Reset"
-                  message: "Prices have normalised. Returning to standard self-consumption."
-          - service: input_button.press
-            target:
-              entity_id: input_button.alphaess_helper_dispatch_reset_full
+              - if:
+                  - condition: template
+                    value_template: "{{ new_status_text == '🟢 Idle (Normal Mode)' }}"
+                then:
+                  - service: notify.mobile_app_phone   # ← update to your device
+                    data:
+                      title: "🔄 HA Simple Energy Control Reset"
+                      message: "Prices have normalised. Returning to standard self-consumption."
+              - service: input_button.press
+                target:
+                  entity_id: input_button.alphaess_helper_dispatch_reset_full
+
