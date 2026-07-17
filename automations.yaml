@@ -1,3 +1,12 @@
+# automations.yaml  [LEGACY REFERENCE — do not copy manually]
+#
+# Simple HA Energy Control
+# This file is kept for reference only. The canonical, up-to-date version of
+# this automation is now part of the HA package:
+#   packages/simple_ha_energy_control.yaml
+#
+# Copy that file into your HA packages/ folder instead. See README.md.
+#
 # automations.yaml
 - id: 'alphaess_amber_optimization_tiered'
   alias: "Energy: AlphaESS Amber Dispatch Optimization (Tiered)"
@@ -121,7 +130,7 @@
               target:
                 entity_id: input_select.alphaess_helper_dispatch_mode
               data:
-                option: "State of Charge Control (2)"
+                option: "Optimise Consumption (6)"
             - service: input_number.set_value
               target:
                 entity_id: input_number.alphaess_helper_dispatch_duration

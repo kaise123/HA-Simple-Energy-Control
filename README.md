@@ -1,12 +1,13 @@
-# Home Assistant Simple Energy Control
+# Simple HA Energy Control
 
-An automated energy management configuration for Home Assistant. This project controls an AlphaESS battery system using live and forecasted wholesale electricity prices from Amber Electric. It uses multi-tier State of Charge (SOC) rules, predictive 12-hour forecasting, and Modbus dispatch controls to optimize battery charging during low-price periods and grid exporting during high-price events.
+An automated energy management package for Home Assistant. This project controls an AlphaESS battery system using live and forecasted wholesale electricity prices from Amber Electric. It uses multi-tier State of Charge (SOC) rules, predictive 12-hour forecasting, and Modbus dispatch controls to optimise battery charging during low-price periods and grid exporting during high-price events.
 
-This can easily be adapted to work with other battery systems and energy providers - but in this state is set up for AlphaESS and Amber Electric.
+This can easily be adapted to work with other battery systems and energy providers — but in this state is set up for AlphaESS and Amber Electric.
 
 ## Features
 
-* **Multi-Tier Export and Import Rules:** Define price thresholds that adjust dynamically based on current battery capacity. For example, you can configure the system to export at $0.20/kWh when SOC is >80%, but require $1.00/kWh when SOC is <30%.
+* **Multi-Tier Export and Import Rules:** Define price thresholds that adjust dynamically based on current battery capacity. For example, configure the system to export at $0.20/kWh when SOC is >80%, but require $1.00/kWh when SOC is <30%.
+* **Optimised Grid Charging:** When import prices drop below your threshold, the system activates AlphaESS **Optimise Consumption (Mode 6)** — which force-charges the battery at full power from the grid while PV output also contributes.
 * **Predictive Holds:** Evaluates the next 12 hours of Amber price forecasts. If a significant price event is anticipated, the system can temporarily suspend standard rules to preserve battery capacity for higher returns or lower charging costs.
 * **Hysteresis Logic:** Applies a configurable buffer to target prices to prevent the inverter from rapidly toggling between states when live prices fluctuate around a threshold.
 * **State-Based Notifications:** Triggers mobile push notifications only when the active dispatch tier changes, reducing alert fatigue.
@@ -16,15 +17,28 @@ This can easily be adapted to work with other battery systems and energy provide
 
 ## Prerequisites
 
-Before implementing this configuration, ensure the following integrations and frontend components are installed and configured in your Home Assistant instance:
+Before installing, ensure the following integrations and frontend components are already installed and configured:
 
 ### Integrations
-1. **[Amber Express](https://github.com/hass-energy/amber-express)**: Amber Express integration configured with your API key.
-2. **AlphaESS Modbus**: The AlphaESS inverter must be configured for local Modbus control. This automation relies on the specific `input_select`, `input_number`, and `input_boolean` helper entities used to trigger AlphaESS dispatch modes. Specifically, I have used https://projects.hillviewlodge.ie/alphaess/ to integrate AlphaESS with Home Assistant using Modbus.
-3. **Home Energy Monitor**: A sensor monitoring total site consumption (this project uses a Shelly EM as an example - but any sensor reporting watts will do).
+
+1. **[Amber Electric](https://github.com/hass-energy/amber-express)**: Configured with your API key. Provides:
+   - `sensor.amber_express_home_general_price`
+   - `sensor.amber_express_home_feed_in_price`
+
+2. **[AlphaESS Modbus (hillviewlodge.ie/alphaess)](https://projects.hillviewlodge.ie/alphaess/)**: AlphaESS inverter configured for local Modbus TCP control. Provides the helper entities used to trigger dispatch modes. Specifically required:
+   - `input_select.alphaess_helper_dispatch_mode`
+   - `input_number.alphaess_helper_dispatch_duration`
+   - `input_boolean.alphaess_helper_dispatch`
+   - `input_button.alphaess_helper_dispatch_reset_full`
+   - `sensor.alphaess_soc_battery`
+
+3. **Home Energy Monitor**: Any sensor reporting site consumption in watts (e.g. a Shelly EM).
+
+4. **Mobile App**: A `notify.mobile_app_phone` notification service. Replace this with your actual device name if it differs.
 
 ### Frontend Cards (HACS)
-The dashboard requires the following custom cards, available via the Home Assistant Community Store (HACS):
+
+The dashboard requires these custom Lovelace cards:
 * [`power-flow-card-plus`](https://github.com/flixlix/power-flow-card-plus)
 * [`apexcharts-card`](https://github.com/RomRider/apexcharts-card)
 
@@ -32,43 +46,96 @@ The dashboard requires the following custom cards, available via the Home Assist
 
 ## Installation
 
-### 1. Update Entity IDs
-Before copying the configuration files, execute a find-and-replace to map the template entity IDs to your specific Home Assistant environment. 
+Simple HA Energy Control is distributed as a native **Home Assistant Package** — a single YAML file that is automatically loaded by HA alongside your main configuration. No custom integrations or Python code required.
 
-Key entities to update:
-* `sensor.amber_express_home_general_price` -> Replace with your Amber General/Import price sensor.
-* `sensor.amber_express_home_feed_in_price` -> Replace with your Amber Feed-in/Export price sensor.
-* `sensor.shelly_ct1_power` -> Replace with your home consumption sensor.
-* `notify.mobile_app_phone` -> Replace with your specific mobile app notification service.
+### 1. Enable HA Packages (once only)
 
-### 2. Configuration Helpers (`configuration.yaml`)
-The automation relies on several helper entities (Input Booleans, Input Numbers, Input Texts) and Template Sensors. 
+If you haven't already, add the following to your `configuration.yaml`:
 
-Copy the relevant sections from `configuration.yaml` in this repository into your own. Alternatively, these can be created manually via the UI (Settings > Devices & Services > Helpers). Note that `input_number` helpers should be configured with `mode: box` to display as text-entry fields on the dashboard.
+```yaml
+homeassistant:
+  packages: !include_dir_named packages
+```
 
-### 3. Automation Logic (`automations.yaml`)
-Copy the contents of `automations.yaml` into your Home Assistant automations file. This script triggers on changes to the battery SOC or Amber prices, evaluates the tiered rules and predictive holds, applies the hysteresis offset, and issues the appropriate Modbus dispatch command.
+This tells Home Assistant to automatically load any `.yaml` file placed in the `packages/` folder inside your HA config directory.
 
-### 4. Lovelace Dashboard
+> **Already using packages?** If you already have a `packages:` block, just ensure the `packages/` folder is included. You can also use a named include to avoid conflicts:
+> ```yaml
+> homeassistant:
+>   packages:
+>     simple_ha_energy_control: !include packages/simple_ha_energy_control.yaml
+> ```
+
+### 2. Copy the Package File
+
+Copy [`packages/simple_ha_energy_control.yaml`](packages/simple_ha_energy_control.yaml) from this repository into the `packages/` folder in your Home Assistant config directory.
+
+### 3. Update Entity IDs (if required)
+
+If any of your Amber or notification entity IDs differ from the defaults, find-and-replace the following in `simple_ha_energy_control.yaml` before copying:
+
+| Default entity | Replace with |
+|---|---|
+| `sensor.amber_express_home_general_price` | Your Amber import price sensor |
+| `sensor.amber_express_home_feed_in_price` | Your Amber feed-in price sensor |
+| `notify.mobile_app_phone` | Your mobile notification service |
+
+### 4. Restart Home Assistant
+
+Go to **Settings → System → Restart**. After restarting, all helpers, template sensors, and the automation will be active.
+
+### 5. Configure the Dashboard (manual)
+
 1. Create a new View in your Home Assistant Dashboard.
-2. Enter Edit mode (pencil icon), select the options menu (three dots), and open the **Raw Configuration Editor**.
-3. Paste the contents of `dashboard.yaml` into the new view block.
+2. Enter Edit mode (pencil icon) → options menu (⋮) → **Raw Configuration Editor**.
+3. Paste the contents of [`dashboard.yaml`](dashboard.yaml) into the new view block.
+4. Click **Save**.
 
 ---
 
 ## Usage Guide
 
-Once installed, use the Energy Management dashboard to configure the system's behavior.
-
 ### Setting Tiers
-The automation evaluates rules in descending order from Tier 1 to Tier 3. 
-* **Exporting:** When price and SOC conditions are met, the automation sets the AlphaESS to 'Maximise Output' (Mode 4) for 30 minutes.
-* **Importing:** When prices drop below the target threshold, it sets the AlphaESS to 'State of Charge Control' (Mode 2) to force-charge the battery.
+
+The automation evaluates rules in descending priority from Tier 1 to Tier 3.
+
+* **Exporting:** When feed-in price and SOC conditions are met, the automation activates **Maximise Output (Mode 4)** for 30 minutes, discharging the battery to the grid at maximum power.
+* **Importing:** When import prices drop below your threshold, the automation activates **Optimise Consumption (Mode 6)** for 30 minutes. The battery force-charges at full power from the grid while PV output also contributes.
 
 ### Predictive Holds
-When enabled, the system evaluates the `forecasts` attribute of the Amber sensors. For example, if a Tier 1 rule is configured to export at $0.30/kWh, but the forecast indicates a peak of $1.50/kWh later in the day, the system can block the immediate export to preserve capacity, provided the forecasted peak exceeds your configured predictive threshold.
+
+When enabled, the system evaluates the `forecasts` attribute of the Amber price sensors 12 hours ahead. For example, if a Tier 1 rule is set to export at $0.30/kWh, but the forecast shows a $1.50/kWh peak later in the day, the system can block the immediate export to preserve battery capacity — provided the forecasted peak exceeds your configured predictive threshold.
 
 ### Manual Overrides
-The Master Automation Switch disables the script entirely. Manual controls at the bottom of the dashboard can then be used to dictate specific Modbus dispatch modes. Clicking "Reset to Normal Mode" clears all overrides and returns the inverter to standard self-consumption (Mode 5).
+
+The Master Automation Switch disables all automation logic. Manual controls at the bottom of the dashboard can then be used to select specific dispatch modes directly. Clicking **Reset to Normal Mode** returns the inverter to standard self-consumption.
 
 ---
+
+## Dispatch Modes Reference
+
+| Mode | Label | Behaviour |
+|---|---|---|
+| 4 | Maximise Output | Forces battery discharge; maximises power exported to the grid |
+| 5 | Normal | Standard self-consumption (the reset target) |
+| 6 | Optimise Consumption | Force-charges battery at full power from the grid; PV also contributes |
+
+---
+
+## File Structure
+
+```
+HA-Simple-Energy-Control/
+├── packages/
+│   └── simple_ha_energy_control.yaml   # ★ Install this into your HA packages/ folder
+├── dashboard.yaml                       # Lovelace dashboard (paste into a new view)
+├── automations.yaml                     # Legacy reference only
+├── configuration.yaml                   # Legacy reference only
+└── README.md
+```
+
+---
+
+## License
+
+[MIT](LICENSE)
