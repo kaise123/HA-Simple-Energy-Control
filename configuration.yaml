@@ -1,3 +1,15 @@
+# configuration.yaml  [LEGACY REFERENCE — do not copy manually]
+#
+# Simple HA Energy Control
+# This file is kept for reference only. The canonical, up-to-date version of
+# these helpers and template sensors is now part of the HA package:
+#   packages/simple_ha_energy_control.yaml
+#
+# Copy that file into your HA packages/ folder instead. See README.md.
+#
+# NOTE: This file contained duplicate input_number entries for the predictive
+# threshold helpers — those have been de-duplicated in the package.
+#
 template:
   - sensor:
       # Scans the forecast array between 1 and 12 hours ahead (ignoring current hour)
