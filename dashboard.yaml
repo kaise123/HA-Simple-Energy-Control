@@ -200,23 +200,26 @@ views:
               Use these controls to manually override the automation. Below is a guide to what each dispatch mode actually does to your AlphaESS system:
               <br><br>
               **1 - Battery only Charges from PV**<br>
-              Prevents the battery from charging from the grid under any circumstances.
-              <br><br>
+              Battery charges from PV at the set power. Battery will not discharge/feed house loads. Excess PV is sent to the grid.
+              <br>
               **2 - State of Charge Control**<br>
               Forces the battery to charge from the grid. *(Used by automation for cheap imports).*
-              <br><br>
+              <br>
               **3 - Load Following**<br>
               Battery discharges to match house load exactly, preventing accidental export.
-              <br><br>
+              <br>
               **4 - Maximise Output**<br>
               Forces the battery to discharge at maximum capacity to the grid. *(Used by automation for price spikes).*
-              <br><br>
+              <br>
               **5 - Normal Mode**<br>
               Default behavior. Solar charges battery first, then covers house load, then exports excess.
-              <br><br>
-              **6 & 7 - Optimise / Maximise Consumption**<br>
-              Prioritizes using solar and battery for the house load over exporting.
-              <br><br>
+              <br>
+              **6 - Optimise Consumption**<br>
+              Force charge the battery at full power using PV first, then adding the maximum possible input from grid
+              <br>
+              **7 - Maximise Consumption**<br>
+              Force charge the battery at full power using only the grid. PV input is disabled.
+              <br>
               **19 - No Battery Charge**<br>
               Completely prevents the battery from charging.
           - type: entities
