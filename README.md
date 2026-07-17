@@ -15,6 +15,10 @@ This can easily be adapted to work with other battery systems and energy provide
 
 ---
 
+![HA Simple Energy Control Dashboard](docs/dashboard.png)
+
+---
+
 ## Prerequisites
 
 Before installing, ensure the following integrations and frontend components are already installed and configured:
