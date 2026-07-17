@@ -84,11 +84,11 @@ Open `ha_simple_energy_control.yaml` and review the **USER CONFIGURATION** block
 |---|---|---|
 | Import price sensor | `sensor.amber_express_home_general_price` | Settings → Devices & Services → Amber Express |
 | Feed-in price sensor | `sensor.amber_express_home_feed_in_price` | Settings → Devices & Services → Amber Express |
-| Battery SOC sensor | `sensor.alphaess_soc_battery` | Settings → Devices & Services → AlphaESS |
-| Dispatch mode select | `input_select.alphaess_helper_dispatch_mode` | Settings → Devices & Services → AlphaESS |
-| Dispatch duration | `input_number.alphaess_helper_dispatch_duration` | Settings → Devices & Services → AlphaESS |
-| Dispatch trigger | `input_boolean.alphaess_helper_dispatch` | Settings → Devices & Services → AlphaESS |
-| Reset button | `input_button.alphaess_helper_dispatch_reset_full` | Settings → Devices & Services → AlphaESS |
+| Battery SOC sensor | `sensor.alphaess_soc_battery` | Settings → Devices & Services → Entities (Or in your battery integration) |
+| Dispatch mode select | `input_select.alphaess_helper_dispatch_mode` | Settings → Devices & Services → Entities (Or in your battery integration) |
+| Dispatch duration | `input_number.alphaess_helper_dispatch_duration` | Settings → Devices & Services → Entities (Or in your battery integration) |
+| Dispatch trigger | `input_boolean.alphaess_helper_dispatch` | Settings → Devices & Services → Entities (Or in your battery integration) |
+| Reset button | `input_button.alphaess_helper_dispatch_reset_full` | Settings → Devices & Services → Entities (Or in your battery integration) |
 | Mobile notifications | `notify.mobile_app_phone` | Settings → Devices & Services → Mobile App |
 
 ### 4. Restart Home Assistant
@@ -125,25 +125,13 @@ The Master Automation Switch disables all automation logic. Manual controls at t
 
 ## Dispatch Modes Reference
 
+Only relevant for AlphaESS batteries connected via the hillviewlodge.ie/alphaess integration. This might be different if you are trying to integrate this with a different battery/energy system.
+
 | Mode | Label | Behaviour |
 |---|---|---|
 | 4 | Maximise Output | Forces battery discharge; maximises power exported to the grid |
 | 5 | Normal | Standard self-consumption (the reset target) |
 | 6 | Optimise Consumption | Force-charges battery at full power from the grid; PV also contributes |
-
----
-
-## File Structure
-
-```
-HA-Simple-Energy-Control/
-├── packages/
-│   └── ha_simple_energy_control.yaml   # ★ Install this into your HA packages/ folder
-├── dashboard.yaml                       # Lovelace dashboard (paste into a new view)
-├── automations.yaml                     # Legacy reference only
-├── configuration.yaml                   # Legacy reference only
-└── README.md
-```
 
 ---
 
