@@ -76,14 +76,20 @@ template:
       - name: "Amber Max Export Forecast 12h"
         unique_id: amber_max_export_forecast_12h
         unit_of_measurement: "$/kWh"
+        state_class: measurement
         icon: mdi:chart-line-variant
         state: >
           {% set fcast = state_attr('sensor.amber_express_home_feed_in_price', 'forecast') %}
           {% if fcast %}
-            {% set start = (now() + timedelta(hours=1)).isoformat() %}
-            {% set end = (now() + timedelta(hours=12)).isoformat() %}
-            {% set future = fcast | selectattr('time', '>', start) | selectattr('time', '<=', end) | map(attribute='value') | list %}
-            {{ future | max | float(0) if future else 0 }}
+            {% set start = now() + timedelta(hours=1) %}
+            {% set end = now() + timedelta(hours=12) %}
+            {% set ns = namespace(vals=[]) %}
+            {% for item in fcast %}
+              {% if as_datetime(item.time) > start and as_datetime(item.time) <= end %}
+                {% set ns.vals = ns.vals + [item.value | float(0)] %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.vals | max if ns.vals else 0 }}
           {% else %}
             0
           {% endif %}
@@ -94,14 +100,20 @@ template:
       - name: "Amber Min Import Forecast 12h"
         unique_id: amber_min_import_forecast_12h
         unit_of_measurement: "$/kWh"
+        state_class: measurement
         icon: mdi:chart-line-variant
         state: >
           {% set fcast = state_attr('sensor.amber_express_home_general_price', 'forecast') %}
           {% if fcast %}
-            {% set start = (now() + timedelta(hours=1)).isoformat() %}
-            {% set end = (now() + timedelta(hours=12)).isoformat() %}
-            {% set future = fcast | selectattr('time', '>', start) | selectattr('time', '<=', end) | map(attribute='value') | list %}
-            {{ future | min | float(0) if future else 0 }}
+            {% set start = now() + timedelta(hours=1) %}
+            {% set end = now() + timedelta(hours=12) %}
+            {% set ns = namespace(vals=[]) %}
+            {% for item in fcast %}
+              {% if as_datetime(item.time) > start and as_datetime(item.time) <= end %}
+                {% set ns.vals = ns.vals + [item.value | float(0)] %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.vals | min if ns.vals else 0 }}
           {% else %}
             0
           {% endif %}
@@ -205,6 +217,16 @@ input_number:
     mode: box
     unit_of_measurement: "$/kWh"
 
+  # SOC debounce: prevents rapid toggling when battery SOC sits near a tier threshold.
+  # Active tiers only deactivate once SOC moves this many % beyond the threshold.
+  amber_soc_hysteresis:
+    name: SOC Hysteresis Buffer
+    min: 0
+    max: 20
+    step: 1
+    mode: box
+    unit_of_measurement: "%"
+
   # --- PREDICTIVE THRESHOLDS --------------------------------------------
   # Export hold: blocks exporting when a forecasted future spike exceeds
   # this value, preserving battery capacity for the higher-value event.
@@ -246,6 +268,18 @@ input_number:
     step: 0.01
     mode: box
     unit_of_measurement: "$/kWh"
+
+  # --- EXPORT SOC GUARD -------------------------------------------------
+  # Hard floor on battery SOC during export operations. Exporting is blocked
+  # when SOC is at or below this level regardless of tier rules.
+  # Adjust to protect battery warranty or minimum reserve requirements.
+  amber_export_min_soc_guard:
+    name: Export Minimum SOC Guard
+    min: 0
+    max: 50
+    step: 1
+    mode: box
+    unit_of_measurement: "%"
 
 # ---------------------------------------------------------------------------
 # INPUT BOOLEANS — Feature toggles
@@ -307,15 +341,57 @@ automation:
       data. On import triggers, activates Optimise Consumption (Mode 6) for
       full-power grid force-charging. On export triggers, activates Maximise
       Output (Mode 4). Runs on every price tick or SOC change.
-    mode: single
+    mode: restart
 
     trigger:
+      # Price and SOC changes — react to real updates only; ignore unavailable/unknown
+      # (e.g. on HA startup or sensor outage) to prevent spurious dispatch commands.
       - platform: state
         entity_id:
           - sensor.amber_express_home_general_price   # ← update if your site name differs
           - sensor.amber_express_home_feed_in_price   # ← update if your site name differs
           - sensor.alphaess_soc_battery
+        not_to:
+          - "unknown"
+          - "unavailable"
+
+      # Feature toggles — react to any change (on/off has no unavailable state)
+      - platform: state
+        entity_id:
           - input_boolean.amber_automation_enabled
+          - input_boolean.amber_export_tier_1_enabled
+          - input_boolean.amber_export_tier_2_enabled
+          - input_boolean.amber_export_tier_3_enabled
+          - input_boolean.amber_import_tier_1_enabled
+          - input_boolean.amber_import_tier_2_enabled
+          - input_boolean.amber_predictive_export_hold
+          - input_boolean.amber_predictive_import_hold
+
+      # Threshold changes — re-evaluate immediately when any rule is adjusted from the dashboard
+      - platform: state
+        entity_id:
+          - input_number.amber_export_soc_1
+          - input_number.amber_export_price_1
+          - input_number.amber_export_soc_2
+          - input_number.amber_export_price_2
+          - input_number.amber_export_soc_3
+          - input_number.amber_export_price_3
+          - input_number.amber_import_soc_1
+          - input_number.amber_import_price_1
+          - input_number.amber_import_soc_2
+          - input_number.amber_import_price_2
+          - input_number.amber_price_hysteresis
+          - input_number.amber_soc_hysteresis
+          - input_number.amber_export_forecast_threshold
+          - input_number.amber_import_forecast_threshold
+          - input_number.amber_export_absolute_override
+          - input_number.amber_import_absolute_override
+          - input_number.amber_export_min_soc_guard
+
+      # Periodic safety check — fires every 30 min even during price-quiet periods.
+      # Ensures dispatch duration never silently drifts beyond the 60-min failsafe.
+      - platform: time_pattern
+        minutes: "/30"
 
     action:
       - variables:
@@ -324,37 +400,115 @@ automation:
           import_price: "{{ states('sensor.amber_express_home_general_price') | float(0) }}"
           export_price: "{{ states('sensor.amber_express_home_feed_in_price') | float(0) }}"
           hysteresis: "{{ states('input_number.amber_price_hysteresis') | float(0) }}"
+          soc_hysteresis: "{{ states('input_number.amber_soc_hysteresis') | float(0) }}"
           enabled: "{{ is_state('input_boolean.amber_automation_enabled', 'on') }}"
           current_status: "{{ states('input_text.amber_active_tier_status') }}"
 
-          # 2. Predictive Hold Logic (with absolute overrides)
+          # 2. Detect which tier is currently active (used for asymmetric hysteresis).
+          # Entry fires immediately when the threshold is crossed — no buffer on activation.
+          # Exit only occurs once price/SOC has moved beyond the threshold by the hysteresis amount.
+          currently_exporting_t1: "{{ 'Exporting (Tier 1)' in current_status }}"
+          currently_exporting_t2: "{{ 'Exporting (Tier 2)' in current_status }}"
+          currently_exporting_t3: "{{ 'Exporting (Tier 3)' in current_status }}"
+          currently_importing_t1: "{{ 'Importing (Tier 1)' in current_status }}"
+          currently_importing_t2: "{{ 'Importing (Tier 2)' in current_status }}"
+
+          # 3. Predictive Hold Logic (with absolute overrides)
           # Export hold: true when a future spike exceeds threshold AND
           # the live price hasn't already breached the absolute override ceiling.
           pred_exp_active: >
             {{ is_state('input_boolean.amber_predictive_export_hold', 'on')
                and states('sensor.amber_max_export_forecast_12h')|float(0) >= states('input_number.amber_export_forecast_threshold')|float(99)
-               and export_price < states('input_number.amber_export_absolute_override')|float(99) }}
+               and states('sensor.amber_express_home_feed_in_price')|float(0) < states('input_number.amber_export_absolute_override')|float(99) }}
 
           # Import hold: true when a future cheap period is forecast AND
           # the live price hasn't already fallen below the absolute override floor.
           pred_imp_active: >
             {{ is_state('input_boolean.amber_predictive_import_hold', 'on')
                and states('sensor.amber_min_import_forecast_12h')|float(0) <= states('input_number.amber_import_forecast_threshold')|float(-99)
-               and import_price > states('input_number.amber_import_absolute_override')|float(-99) }}
+               and states('sensor.amber_express_home_general_price')|float(0) > states('input_number.amber_import_absolute_override')|float(-99) }}
 
-          # 3. Evaluate which tier rules match (only when predictive holds are inactive)
-          t1_exp: "{{ enabled and not pred_exp_active and is_state('input_boolean.amber_export_tier_1_enabled', 'on') and soc >= states('input_number.amber_export_soc_1')|float(100) and export_price >= (states('input_number.amber_export_price_1')|float(99) + hysteresis) }}"
-          t2_exp: "{{ enabled and not pred_exp_active and is_state('input_boolean.amber_export_tier_2_enabled', 'on') and soc >= states('input_number.amber_export_soc_2')|float(100) and export_price >= (states('input_number.amber_export_price_2')|float(99) + hysteresis) }}"
-          t3_exp: "{{ enabled and not pred_exp_active and is_state('input_boolean.amber_export_tier_3_enabled', 'on') and soc >= states('input_number.amber_export_soc_3')|float(100) and export_price >= (states('input_number.amber_export_price_3')|float(99) + hysteresis) }}"
+          # 4. Evaluate which tier rules match with asymmetric hysteresis.
+          #
+          # EXPORT tiers:
+          #   Entry  — soc >= threshold          AND price >= threshold          (immediate, no buffer)
+          #   Exit   — soc >= threshold - buffer  AND price >= threshold - buffer (stays active until conditions genuinely deteriorate)
+          #
+          # IMPORT tiers (inverted — SOC ceiling, price ceiling):
+          #   Entry  — soc <= threshold          AND price <= threshold
+          #   Exit   — soc <= threshold + buffer  AND price <= threshold + buffer
+          t1_exp: >
+            {{ enabled and not pred_exp_active
+               and is_state('input_boolean.amber_export_tier_1_enabled', 'on')
+               and (
+                 (currently_exporting_t1
+                  and soc >= (states('input_number.amber_export_soc_1')|float(100) - soc_hysteresis)
+                  and export_price >= (states('input_number.amber_export_price_1')|float(99) - hysteresis))
+                 or
+                 (not currently_exporting_t1
+                  and soc >= states('input_number.amber_export_soc_1')|float(100)
+                  and export_price >= states('input_number.amber_export_price_1')|float(99))
+               ) }}
 
-          t1_imp: "{{ enabled and not pred_imp_active and is_state('input_boolean.amber_import_tier_1_enabled', 'on') and soc <= states('input_number.amber_import_soc_1')|float(0) and import_price <= (states('input_number.amber_import_price_1')|float(-99) - hysteresis) }}"
-          t2_imp: "{{ enabled and not pred_imp_active and is_state('input_boolean.amber_import_tier_2_enabled', 'on') and soc <= states('input_number.amber_import_soc_2')|float(0) and import_price <= (states('input_number.amber_import_price_2')|float(-99) - hysteresis) }}"
+          t2_exp: >
+            {{ enabled and not pred_exp_active
+               and is_state('input_boolean.amber_export_tier_2_enabled', 'on')
+               and (
+                 (currently_exporting_t2
+                  and soc >= (states('input_number.amber_export_soc_2')|float(100) - soc_hysteresis)
+                  and export_price >= (states('input_number.amber_export_price_2')|float(99) - hysteresis))
+                 or
+                 (not currently_exporting_t2
+                  and soc >= states('input_number.amber_export_soc_2')|float(100)
+                  and export_price >= states('input_number.amber_export_price_2')|float(99))
+               ) }}
 
-          # 4. Determine the single active action (evaluated in priority order)
+          t3_exp: >
+            {{ enabled and not pred_exp_active
+               and is_state('input_boolean.amber_export_tier_3_enabled', 'on')
+               and (
+                 (currently_exporting_t3
+                  and soc >= (states('input_number.amber_export_soc_3')|float(100) - soc_hysteresis)
+                  and export_price >= (states('input_number.amber_export_price_3')|float(99) - hysteresis))
+                 or
+                 (not currently_exporting_t3
+                  and soc >= states('input_number.amber_export_soc_3')|float(100)
+                  and export_price >= states('input_number.amber_export_price_3')|float(99))
+               ) }}
+
+          t1_imp: >
+            {{ enabled and not pred_imp_active
+               and is_state('input_boolean.amber_import_tier_1_enabled', 'on')
+               and (
+                 (currently_importing_t1
+                  and soc <= (states('input_number.amber_import_soc_1')|float(0) + soc_hysteresis)
+                  and import_price <= (states('input_number.amber_import_price_1')|float(-99) + hysteresis))
+                 or
+                 (not currently_importing_t1
+                  and soc <= states('input_number.amber_import_soc_1')|float(0)
+                  and import_price <= states('input_number.amber_import_price_1')|float(-99))
+               ) }}
+
+          t2_imp: >
+            {{ enabled and not pred_imp_active
+               and is_state('input_boolean.amber_import_tier_2_enabled', 'on')
+               and (
+                 (currently_importing_t2
+                  and soc <= (states('input_number.amber_import_soc_2')|float(0) + soc_hysteresis)
+                  and import_price <= (states('input_number.amber_import_price_2')|float(-99) + hysteresis))
+                 or
+                 (not currently_importing_t2
+                  and soc <= states('input_number.amber_import_soc_2')|float(0)
+                  and import_price <= states('input_number.amber_import_price_2')|float(-99))
+               ) }}
+
+          # 5. Determine the single active action (evaluated in priority order).
+          # Predictive holds take full priority over tier rules — no extra live-price
+          # condition is applied, so the hold is always reflected in the status text.
           active_action: >
             {% if not enabled %} disabled
-            {% elif pred_exp_active and (export_price >= states('input_number.amber_export_price_3')|float(99)) %} holding_export
-            {% elif pred_imp_active and (import_price <= states('input_number.amber_import_price_1')|float(-99)) %} holding_import
+            {% elif pred_exp_active %} holding_export
+            {% elif pred_imp_active %} holding_import
             {% elif t1_exp %} export_1
             {% elif t2_exp %} export_2
             {% elif t3_exp %} export_3
@@ -362,17 +516,24 @@ automation:
             {% elif t2_imp %} import_2
             {% else %} idle {% endif %}
 
-          # 5. Human-readable status string for the dashboard indicator
+          # 6. Human-readable status string — driven entirely from active_action to
+          # guarantee it always matches the action the automation will actually take.
           new_status_text: >
-            {% if not enabled %} 🔴 Automation Disabled
+            {% if active_action == 'disabled' %} 🔴 Automation Disabled
             {% elif active_action == 'holding_export' %} 🛑 Holding Exports (Spike Forecasted!)
             {% elif active_action == 'holding_import' %} 🛑 Holding Imports (Drop Forecasted!)
-            {% elif t1_exp %} 📤 Exporting (Tier 1)
-            {% elif t2_exp %} 📤 Exporting (Tier 2)
-            {% elif t3_exp %} 📤 Exporting (Tier 3)
-            {% elif t1_imp %} 📥 Importing (Tier 1)
-            {% elif t2_imp %} 📥 Importing (Tier 2)
+            {% elif active_action == 'export_1' %} 📤 Exporting (Tier 1)
+            {% elif active_action == 'export_2' %} 📤 Exporting (Tier 2)
+            {% elif active_action == 'export_3' %} 📤 Exporting (Tier 3)
+            {% elif active_action == 'import_1' %} 📥 Importing (Tier 1)
+            {% elif active_action == 'import_2' %} 📥 Importing (Tier 2)
             {% else %} 🟢 Idle (Normal Mode) {% endif %}
+
+      # Early exit when already disabled: prevents the automation from interfering with manual
+      # dispatch modes while the master switch is off. On the FIRST trigger after disabling,
+      # current_status still holds the previous state so the one-time inverter reset fires.
+      - condition: template
+        value_template: "{{ enabled or 'Automation Disabled' not in current_status }}"
 
       # Update dashboard status indicator on every run
       - service: input_text.set_value
@@ -383,7 +544,7 @@ automation:
 
       - choose:
           # --- EXPORT TRIGGER ---
-          # Activates Maximise Output (Mode 4) for 30 min when an export
+          # Activates Maximise Output (Mode 4) for up to 60 minutes when an export
           # tier condition is met and the battery has charge to give.
           # Dispatch commands are only sent when the active state has changed —
           # re-triggers with no state change update the status text only.
@@ -391,7 +552,7 @@ automation:
               - condition: template
                 value_template: "{{ active_action in ['export_1', 'export_2', 'export_3'] }}"
               - condition: template
-                value_template: "{{ soc > 10 }}"
+                value_template: "{{ soc > states('input_number.amber_export_min_soc_guard') | float(10) }}"
             sequence:
               - if:
                   - condition: template
@@ -410,13 +571,13 @@ automation:
                     target:
                       entity_id: input_number.alphaess_helper_dispatch_duration
                     data:
-                      value: 30
+                      value: 60  # 60-min failsafe; re-evaluated on every price tick and by the 30-min time trigger
                   - service: input_boolean.turn_on
                     target:
                       entity_id: input_boolean.alphaess_helper_dispatch
 
           # --- IMPORT TRIGGER ---
-          # Activates Optimise Consumption (Mode 6) for 30 min when an import
+          # Activates Optimise Consumption (Mode 6) for up to 60 minutes when an import
           # tier condition is met and the battery is not already full.
           # Mode 6: force-charges the battery at full power from the grid;
           # house load served by grid; PV output also contributes.
@@ -445,18 +606,22 @@ automation:
                     target:
                       entity_id: input_number.alphaess_helper_dispatch_duration
                     data:
-                      value: 30
+                      value: 60  # 60-min failsafe; re-evaluated on every price tick and by the 30-min time trigger
                   - service: input_boolean.turn_on
                     target:
                       entity_id: input_boolean.alphaess_helper_dispatch
 
         # --- IDLE / DISABLED / HOLDING (RETURN TO NORMAL) ---
         # Resets the inverter to standard self-consumption via the reset button.
-        # Only fires on the transition to idle — not on every idle re-trigger.
+        # Only fires when leaving an active export or import session — prevents
+        # spurious Modbus writes when disabling from idle, or when a predictive
+        # hold activates while the inverter is already in normal mode.
         default:
           - if:
               - condition: template
-                value_template: "{{ current_status != new_status_text }}"
+                value_template: >
+                  {{ current_status != new_status_text and
+                     ('Exporting' in current_status or 'Importing' in current_status) }}
             then:
               - if:
                   - condition: template
