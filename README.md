@@ -101,9 +101,19 @@ Go to **Settings → System → Restart**. After restarting, all helpers, templa
 
 ### 5. Configure the Dashboard (manual)
 
-1. Create a new View in your Home Assistant Dashboard.
-2. Enter Edit mode (pencil icon) → options menu (⋮) → **Raw Configuration Editor**.
-3. Paste the contents of [`dashboard.yaml`](dashboard.yaml) into the new view block.
+`dashboard.yaml` is a complete two-view dashboard. It must be applied to the **root** of a dashboard — not to a single view inside one.
+
+**Option A — New Dashboard (recommended):**
+1. Go to **Settings → Dashboards** and click **Add Dashboard**.
+2. Name it (e.g. *Energy Management*) and click **Create**. Open the new dashboard.
+3. Enter Edit mode (pencil icon) → options menu (⋮) → **Raw Configuration Editor**.
+4. **Replace** the entire default content with the contents of [`dashboard.yaml`](dashboard.yaml).
+5. Click **Save**.
+
+**Option B — Add views to an existing dashboard:**
+1. Open your existing dashboard and enter Edit mode.
+2. Open the Raw Configuration Editor (⋮ menu).
+3. Under the existing `views:` key, append the two view blocks from `dashboard.yaml` (everything indented under `views:`).
 4. Click **Save**.
 
 ---
@@ -114,12 +124,16 @@ Go to **Settings → System → Restart**. After restarting, all helpers, templa
 
 The automation evaluates rules in descending priority from Tier 1 to Tier 3.
 
-* **Exporting:** When feed-in price and SOC conditions are met, the automation activates **Maximise Output (Mode 4)** for 30 minutes, discharging the battery to the grid at maximum power.
-* **Importing:** When import prices drop below your threshold, the automation activates **Optimise Consumption (Mode 6)** for 30 minutes. The battery force-charges at full power from the grid while PV output also contributes.
+* **Exporting:** When feed-in price and SOC conditions are met, the automation activates **Maximise Output (Mode 4)**, discharging the battery to the grid at maximum power.
+* **Importing:** When import prices drop below your threshold, the automation activates **Optimise Consumption (Mode 6)**. The battery force-charges at full power from the grid while PV output also contributes.
 
 ### Predictive Holds
 
 When enabled, the system evaluates the `forecasts` attribute of the Amber Express price sensors 12 hours ahead. For example, if a Tier 1 rule is set to export at $0.30/kWh, but the forecast shows a $1.50/kWh peak later in the day, the system can block the immediate export to preserve battery capacity — provided the forecasted peak exceeds your configured predictive threshold.
+
+### Dispatch Duration and Failsafe
+
+Each time the automation sends a dispatch command to the inverter it sets a **60-minute duration** as a failsafe. This is intentionally generous — the automation re-evaluates on every Amber price tick (typically every 30 minutes) and will reset the inverter to normal mode the moment conditions are no longer met. The 60-minute window only matters if HA restarts or all triggers fail during an active session, in which case the inverter self-resets after the timer expires. A 30-minute `time_pattern` trigger also fires as an additional safety check during quiet periods.
 
 ### Manual Overrides
 
