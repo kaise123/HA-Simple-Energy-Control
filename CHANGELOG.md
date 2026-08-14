@@ -1,8 +1,16 @@
-﻿# Changelog
+# Changelog
 
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+---
+
+## [1.1.1] - 2026-08-14
+
+### Fixed
+- **Status evaluation bug**: resolved an issue where Jinja whitespace formatting caused the automation to silently fail and fall back to Normal Mode when attempting to activate export or import tiers.
+- **Export SOC guard status**: the dashboard status now correctly shows when an export is blocked by the minimum SOC guard, instead of incorrectly displaying an active export state.
 
 ---
 
