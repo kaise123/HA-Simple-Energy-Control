@@ -506,28 +506,30 @@ automation:
           # Predictive holds take full priority over tier rules — no extra live-price
           # condition is applied, so the hold is always reflected in the status text.
           active_action: >
-            {% if not enabled %} disabled
-            {% elif pred_exp_active %} holding_export
-            {% elif pred_imp_active %} holding_import
-            {% elif t1_exp %} export_1
-            {% elif t2_exp %} export_2
-            {% elif t3_exp %} export_3
-            {% elif t1_imp %} import_1
-            {% elif t2_imp %} import_2
-            {% else %} idle {% endif %}
+            {%- if not enabled -%} disabled
+            {%- elif pred_exp_active -%} holding_export
+            {%- elif pred_imp_active -%} holding_import
+            {%- elif (t1_exp or t2_exp or t3_exp) and soc <= states('input_number.amber_export_min_soc_guard') | float(10) -%} holding_soc_guard
+            {%- elif t1_exp -%} export_1
+            {%- elif t2_exp -%} export_2
+            {%- elif t3_exp -%} export_3
+            {%- elif t1_imp -%} import_1
+            {%- elif t2_imp -%} import_2
+            {%- else -%} idle {%- endif -%}
 
           # 6. Human-readable status string — driven entirely from active_action to
           # guarantee it always matches the action the automation will actually take.
           new_status_text: >
-            {% if active_action == 'disabled' %} 🔴 Automation Disabled
-            {% elif active_action == 'holding_export' %} 🛑 Holding Exports (Spike Forecasted!)
-            {% elif active_action == 'holding_import' %} 🛑 Holding Imports (Drop Forecasted!)
-            {% elif active_action == 'export_1' %} 📤 Exporting (Tier 1)
-            {% elif active_action == 'export_2' %} 📤 Exporting (Tier 2)
-            {% elif active_action == 'export_3' %} 📤 Exporting (Tier 3)
-            {% elif active_action == 'import_1' %} 📥 Importing (Tier 1)
-            {% elif active_action == 'import_2' %} 📥 Importing (Tier 2)
-            {% else %} 🟢 Idle (Normal Mode) {% endif %}
+            {%- if active_action == 'disabled' -%} 🔴 Automation Disabled
+            {%- elif active_action == 'holding_export' -%} 🛑 Holding Exports (Spike Forecasted!)
+            {%- elif active_action == 'holding_import' -%} 🛑 Holding Imports (Drop Forecasted!)
+            {%- elif active_action == 'holding_soc_guard' -%} 🛑 Export Blocked (SOC Guard Active)
+            {%- elif active_action == 'export_1' -%} 📤 Exporting (Tier 1)
+            {%- elif active_action == 'export_2' -%} 📤 Exporting (Tier 2)
+            {%- elif active_action == 'export_3' -%} 📤 Exporting (Tier 3)
+            {%- elif active_action == 'import_1' -%} 📥 Importing (Tier 1)
+            {%- elif active_action == 'import_2' -%} 📥 Importing (Tier 2)
+            {%- else -%} 🟢 Idle (Normal Mode) {%- endif -%}
 
       # Early exit when already disabled: prevents the automation from interfering with manual
       # dispatch modes while the master switch is off. On the FIRST trigger after disabling,
