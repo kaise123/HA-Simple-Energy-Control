@@ -1,17 +1,19 @@
 # HA Simple Energy Control
 
-An automated energy management package for Home Assistant. This project controls an AlphaESS battery system using live and forecasted wholesale electricity prices from Amber Electric. It uses multi-tier State of Charge (SOC) rules, predictive 12-hour forecasting, and Modbus dispatch controls to optimise battery charging during low-price periods and grid exporting during high-price events.
+An automated energy management package for Home Assistant. This project controls an AlphaESS battery system using live and forecasted wholesale electricity prices from Amber Electric and solar generation forecasts from Solcast. It uses multi-tier State of Charge (SOC) rules, predictive 12-hour price forecasting, predictive solar soaking, negative price curtailment, and Modbus dispatch controls to optimise battery charging during low/negative-price periods and grid exporting during high-price events.
 
 This can easily be adapted to work with other battery systems and energy providers — but in this state is set up for AlphaESS and Amber Electric.
 
 ## Features
 
 * **Multi-Tier Export and Import Rules:** Define price thresholds that adjust dynamically based on current battery capacity. For example, configure the system to export at $0.20/kWh when SOC is >80%, but require $1.00/kWh when SOC is <30%.
+* **Predictive Solar Soaking (Pre-Exporting):** Anticipates upcoming midday negative feed-in periods. When Solcast forecasts high solar generation that will exceed battery capacity during negative prices, the system pre-discharges the battery during the morning positive-price window down to a calculated target SOC, creating headroom to soak 100% of solar generation locally.
+* **Negative Feed-in Price Curtailment:** Automatically halts exports and resets the inverter to Normal self-consumption mode when feed-in prices drop below your configured threshold (e.g. $\le \$0.00$/kWh), preventing costly negative export penalties.
 * **Optimised Grid Charging:** When import prices drop below your threshold, the system activates AlphaESS **Optimise Consumption (Mode 6)** — which force-charges the battery at full power from the grid while PV output also contributes.
-* **Predictive Holds:** Evaluates the next 12 hours of Amber Express price forecasts. If a significant price event is anticipated, the system can temporarily suspend standard rules to preserve battery capacity for higher returns or lower charging costs.
-* **Hysteresis Logic:** Applies a configurable buffer to target prices to prevent the inverter from rapidly toggling between states when live prices fluctuate around a threshold.
-* **State-Based Notifications:** Triggers mobile push notifications only when the active dispatch tier changes, reducing alert fatigue.
-* **Custom Lovelace Dashboard:** Provides a consolidated interface for status tracking, live power flows, price trend graphs, rule configuration, and manual Modbus overrides.
+* **Predictive Holds:** Evaluates the next 12 hours of Amber Express price forecasts. If a significant price spike or drop is anticipated, the system temporarily suspends standard rules to preserve battery capacity for higher returns or lower charging costs.
+* **Hysteresis & Safeguards:** Applies configurable buffers to price and SOC thresholds to prevent rapid mode toggling, with dedicated minimum SOC floors for both standard exporting and solar soak pre-exporting.
+* **State-Based Notifications:** Triggers mobile push notifications exactly once per state transition, dynamically including context like target SoC, limits, and live pricing to reduce alert fatigue while maximizing visibility.
+* **Custom Lovelace Dashboards:** Provides a consolidated `dashboard.yaml` interface for status tracking, live power flows, and solar soaking tuning. Also includes a dedicated `debug_dashboard.yaml` featuring an automation activity logbook, a logic "Why Was This Choice Made?" inspector, and interactive simulation recipes.
 
 ---
 
@@ -33,18 +35,21 @@ Before installing, ensure the following integrations and frontend components are
    - `sensor.amber_express_<sitename>_general_price` — live import price
    - `sensor.amber_express_<sitename>_feed_in_price` — live feed-in price
 
-   The default entity names in this package assume your Amber site is named **"home"**. If your site name differs, update the sensor entity IDs in the USER CONFIGURATION section at the top of the package file.
+2. **[Solcast Solar](https://github.com/BJReplay/ha-solcast-solar)**: A HACS integration providing solar generation forecasts.
+   
+   Provides:
+   - `sensor.solcast_pv_forecast_forecast_remaining_today` (with `estimate10` or `pv_estimate10` conservative forecast attributes).
 
-2. **[AlphaESS Modbus (hillviewlodge.ie/alphaess)](https://projects.hillviewlodge.ie/alphaess/)**: AlphaESS inverter configured for local Modbus TCP control. Provides the helper entities used to trigger dispatch modes:
+3. **[AlphaESS Modbus (hillviewlodge.ie/alphaess)](https://projects.hillviewlodge.ie/alphaess/)**: AlphaESS inverter configured for local Modbus TCP control. Provides the helper entities used to trigger dispatch modes:
    - `input_select.alphaess_helper_dispatch_mode`
    - `input_number.alphaess_helper_dispatch_duration`
    - `input_boolean.alphaess_helper_dispatch`
    - `input_button.alphaess_helper_dispatch_reset_full`
    - `sensor.alphaess_soc_battery`
 
-3. **Home Energy Monitor**: Any sensor reporting site consumption in watts (e.g. a Shelly EM). Used by the dashboard only.
+4. **Home Energy Monitor**: Any sensor reporting site consumption in watts (e.g. a Shelly EM). Used by the dashboard only.
 
-4. **Mobile App**: A `notify.mobile_app_<devicename>` notification service. Update the device name in the package file's USER CONFIGURATION section.
+5. **Mobile App**: A `notify.mobile_app_<devicename>` notification service. Update the device name in the package file's USER CONFIGURATION section.
 
 ### Frontend Cards (HACS)
 
@@ -88,6 +93,7 @@ Open `ha_simple_energy_control.yaml` and review the **USER CONFIGURATION** block
 |---|---|---|
 | Import price sensor | `sensor.amber_express_home_general_price` | Settings → Devices & Services → Amber Express |
 | Feed-in price sensor | `sensor.amber_express_home_feed_in_price` | Settings → Devices & Services → Amber Express |
+| Solcast remaining sensor | `sensor.solcast_pv_forecast_forecast_remaining_today` | Settings → Devices & Services → Solcast Solar |
 | Battery SOC sensor | `sensor.alphaess_soc_battery` | Settings → Devices & Services → Entities (Or in your battery integration) |
 | Dispatch mode select | `input_select.alphaess_helper_dispatch_mode` | Settings → Devices & Services → Entities (Or in your battery integration) |
 | Dispatch duration | `input_number.alphaess_helper_dispatch_duration` | Settings → Devices & Services → Entities (Or in your battery integration) |
@@ -99,16 +105,17 @@ Open `ha_simple_energy_control.yaml` and review the **USER CONFIGURATION** block
 
 Go to **Settings → System → Restart**. After restarting, all helpers, template sensors, and the automation will be active.
 
-### 5. Configure the Dashboard (manual)
+### 5. Configure the Dashboards (manual)
 
-`dashboard.yaml` is a complete two-view dashboard. It must be applied to the **root** of a dashboard — not to a single view inside one.
+`dashboard.yaml` is a complete two-view dashboard for daily use, while `debug_dashboard.yaml` provides advanced diagnostics and simulation tools. They must be applied to the **root** of a dashboard — not to a single view inside one.
 
-**Option A — New Dashboard (recommended):**
+**Option A — New Dashboards (recommended):**
 1. Go to **Settings → Dashboards** and click **Add Dashboard**.
 2. Name it (e.g. *Energy Management*) and click **Create**. Open the new dashboard.
 3. Enter Edit mode (pencil icon) → options menu (⋮) → **Raw Configuration Editor**.
 4. **Replace** the entire default content with the contents of [`dashboard.yaml`](dashboard.yaml).
 5. Click **Save**.
+6. Repeat steps 1-5 for `debug_dashboard.yaml` (e.g. naming it *Energy Diagnostics*).
 
 **Option B — Add views to an existing dashboard:**
 1. Open your existing dashboard and enter Edit mode.
@@ -120,6 +127,21 @@ Go to **Settings → System → Restart**. After restarting, all helpers, templa
 
 ## Usage Guide
 
+### Predictive Solar Soaking
+
+Wholesale electricity prices often plunge into negative territory during midday peak solar generation hours. When this occurs, exporting excess solar costs you money.
+
+The **Predictive Solar Soak** feature solves this proactively:
+1. It monitors Amber Express 12-hour feed-in price forecasts for upcoming negative intervals ($\le \$0.00$/kWh).
+2. When a negative period is detected, it calculates expected excess solar yield using Solcast's conservative 10% forecast (`estimate10` / `pv_estimate10`) and your configured forecast weight.
+3. It derives a **Soak Target SOC** indicating how much battery capacity must be made available to soak up solar generation during the negative pricing window.
+4. During the morning positive-price window (when feed-in price $\ge$ Min Pre-Export Price), the system engages **Mode 4 (Maximise Output)** to pre-discharge the battery down to the target SOC.
+5. Once discharged, the battery sits ready to absorb 100% of solar generation when negative prices hit.
+
+### Negative Price Curtailment
+
+If feed-in prices turn negative and the battery is full or unable to soak remaining solar generation, **Negative Price Curtailment** immediately blocks all export modes and commands the inverter to **Normal Mode (Mode 5)**. This prioritises self-consumption and battery charging while stopping forced grid export.
+
 ### Setting Tiers
 
 The automation evaluates rules in descending priority from Tier 1 to Tier 3.
@@ -129,11 +151,11 @@ The automation evaluates rules in descending priority from Tier 1 to Tier 3.
 
 ### Predictive Holds
 
-When enabled, the system evaluates the `forecasts` attribute of the Amber Express price sensors 12 hours ahead. For example, if a Tier 1 rule is set to export at $0.30/kWh, but the forecast shows a $1.50/kWh peak later in the day, the system can block the immediate export to preserve battery capacity — provided the forecasted peak exceeds your configured predictive threshold.
+When enabled, the system evaluates the `forecasts` attribute of the Amber Express price sensors 12 hours ahead. For example, if a Tier 1 rule is set to export at $0.30/kWh, but the forecast shows a $1.50/kWh peak later in the day, the system blocks immediate export to preserve battery capacity — provided the forecasted peak exceeds your configured predictive threshold.
 
 ### Dispatch Duration and Failsafe
 
-Each time the automation sends a dispatch command to the inverter it sets a **60-minute duration** as a failsafe. This is intentionally generous — the automation re-evaluates on every Amber price tick (typically every 30 minutes) and will reset the inverter to normal mode the moment conditions are no longer met. The 60-minute window only matters if HA restarts or all triggers fail during an active session, in which case the inverter self-resets after the timer expires. A 30-minute `time_pattern` trigger also fires as an additional safety check during quiet periods.
+Each time the automation sends a dispatch command to the inverter, it sets a **60-minute hardware duration** as a failsafe. To prevent the hardware timer from expiring during long export/import sessions, a **45-minute keep-alive** mechanism continuously refreshes the timer as long as conditions are met, minimising unnecessary Modbus writes while ensuring continuous operation. Additionally, a 15-minute `time_pattern` trigger acts as a supplementary safety check.
 
 ### Manual Overrides
 
@@ -143,13 +165,13 @@ The Master Automation Switch disables all automation logic. Manual controls at t
 
 ## Dispatch Modes Reference
 
-Only relevant for AlphaESS batteries connected via the hillviewlodge.ie/alphaess integration. This might be different if you are trying to integrate this with a different battery/energy system.
+Only relevant for AlphaESS batteries connected via the hillviewlodge.ie/alphaess integration.
 
 | Mode | Label | Behaviour |
 |---|---|---|
-| 4 | Maximise Output | Forces battery discharge; maximises power exported to the grid |
-| 5 | Normal | Standard self-consumption (the reset target) |
-| 6 | Optimise Consumption | Force-charges battery at full power from the grid; PV also contributes |
+| 4 | Maximise Output | Forces battery discharge; maximises power exported to the grid (used for price spikes and solar soak pre-exporting) |
+| 5 | Normal | Standard self-consumption (the reset & curtailment target) |
+| 6 | Optimise Consumption | Force-charges battery at full power from the grid; PV also contributes (used for cheap imports) |
 
 ---
 

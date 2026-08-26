@@ -1,5 +1,8 @@
 title: Energy Management
 views:
+  # =========================================================================
+  # VIEW 1: AUTOMATION & LIVE CONTROL
+  # =========================================================================
   - title: Import/Export Automation Control
     icon: mdi:solar-power
     cards:
@@ -62,6 +65,43 @@ views:
             color: '#2ecc71'
             opacity: 0.3
             extend_to: now
+
+      # --- SOLAR SOAK & NEGATIVE PRICE CURTAILMENT ---
+      - type: vertical-stack
+        cards:
+          - type: markdown
+            content: >
+              ### ☀️ Predictive Solar Soak & Curtailment
+              
+              Pre-discharges the battery during positive morning prices to absorb negative midday solar, and halts exports if feed-in prices turn negative.
+              
+              **Your Current Active Rules:**
+              
+              {% if is_state('input_boolean.amber_solar_soak_enabled', 'on') %}✅{% else %}❌{% endif %} **Solar Soak:** Pre-export down to **{{ states('sensor.amber_solar_soak_target_soc') | int(20) }}%** (min floor **{{ states('input_number.amber_soak_min_soc') }}%**) if feed-in is above **${{ states('input_number.amber_soak_min_pre_export_price') }}**.
+              
+              {% if is_state('input_boolean.amber_curtailment_enabled', 'on') %}✅{% else %}❌{% endif %} **Curtailment:** Halt exports and return to Normal Mode if feed-in drops below **${{ states('input_number.amber_curtailment_price_threshold') }}**.
+          - type: entities
+            entities:
+              - type: section
+                label: Solar Soak Pre-Export
+              - entity: input_boolean.amber_solar_soak_enabled
+                name: Enable Solar Soak Pre-Export
+              - entity: sensor.amber_solar_soak_target_soc
+                name: Calculated Soak Target SOC
+              - entity: sensor.amber_solcast_10_forecast
+                name: Solcast 10% Yield Forecast
+              - entity: sensor.amber_negative_export_forecast_12h
+                name: Negative Price Expected (12h)
+              - entity: input_number.amber_soak_min_pre_export_price
+                name: "Pre-export if price ($) is above:"
+              - entity: input_number.amber_soak_min_soc
+                name: "Minimum SOC floor to protect (%):"
+              - type: section
+                label: Negative Price Curtailment
+              - entity: input_boolean.amber_curtailment_enabled
+                name: Enable Negative Curtailment
+              - entity: input_number.amber_curtailment_price_threshold
+                name: "Curtail if price ($) is below:"
 
       # --- EXPORT RULES (DYNAMIC) ---
       - type: vertical-stack
@@ -134,47 +174,42 @@ views:
               - entity: input_number.amber_import_price_2
                 name: "Charge if price ($) is below:"
 
-# --- PREDICTIVE LOGIC & FORECASTING ---
+      # --- PREDICTIVE LOGIC & FORECASTING ---
       - type: vertical-stack
         cards:
           - type: markdown
             content: >
               ### 🔮 Predictive Battery Hold
               
-              These overrides pause your Export or Import tiers if a massive price event is forecasted **between 1 and 12 hours from now** (ignoring the current hour).
+              Pauses export or import tiers when extreme price events are forecasted 1–12 hours ahead, unless live prices trigger an absolute release.
               
-              **Absolute Release:** If the live price crosses your Absolute Release threshold, the hold is instantly destroyed and your normal tiers engage.
+              **Your Current Active Rules:**
               
-              {% if is_state('input_boolean.amber_predictive_export_hold', 'on') and states('sensor.amber_max_export_forecast_12h')|float(0) >= states('input_number.amber_export_forecast_threshold')|float(0) and states('sensor.amber_express_home_feed_in_price')|float(0) < states('input_number.amber_export_absolute_override')|float(99) %}
-              🛑 **EXPORT BLOCKED:** A future spike of **${{ states('sensor.amber_max_export_forecast_12h') }}** is coming! Exports are paused unless the live price hits **${{ states('input_number.amber_export_absolute_override') }}**.
-              {% elif is_state('input_boolean.amber_predictive_import_hold', 'on') and states('sensor.amber_min_import_forecast_12h')|float(0) <= states('input_number.amber_import_forecast_threshold')|float(0) and states('sensor.amber_express_home_general_price')|float(0) > states('input_number.amber_import_absolute_override')|float(-99) %}
-              🛑 **IMPORT BLOCKED:** A future drop to **${{ states('sensor.amber_min_import_forecast_12h') }}** is coming! Charging is paused unless the live price hits **${{ states('input_number.amber_import_absolute_override') }}**.
-              {% else %}
-              🟢 **No holds active.** Future forecasts are normal, or an Absolute Release was triggered.
-              {% endif %}
+              {% if is_state('input_boolean.amber_predictive_export_hold', 'on') %}✅{% else %}❌{% endif %} **Export Hold:** Pause exports if 12h forecast exceeds **${{ states('input_number.amber_export_forecast_threshold') }}** (released if live price > **${{ states('input_number.amber_export_absolute_override') }}**).
+              
+              {% if is_state('input_boolean.amber_predictive_import_hold', 'on') %}✅{% else %}❌{% endif %} **Import Hold:** Pause charging if 12h forecast drops below **${{ states('input_number.amber_import_forecast_threshold') }}** (released if live price < **${{ states('input_number.amber_import_absolute_override') }}**).
           - type: entities
             entities:
               - type: section
-                label: "Future Forecast Data (1h to 12h)"
-              - entity: sensor.amber_max_export_forecast_12h
-                name: Highest Future Export Price
-              - entity: sensor.amber_min_import_forecast_12h
-                name: Lowest Future Import Price
-              - type: section
                 label: Predictive Export Override
               - entity: input_boolean.amber_predictive_export_hold
+                name: Enable Predictive Export Hold
+              - entity: sensor.amber_max_export_forecast_12h
+                name: Highest Future Export Price (1-12h)
               - entity: input_number.amber_export_forecast_threshold
-                name: Hold if Future Spike >
+                name: "Hold if future spike exceeds ($):"
               - entity: input_number.amber_export_absolute_override
-                name: Release Hold if Live Price >
+                name: "Release hold if live price is above ($):"
               - type: section
                 label: Predictive Import Override
               - entity: input_boolean.amber_predictive_import_hold
+                name: Enable Predictive Import Hold
+              - entity: sensor.amber_min_import_forecast_12h
+                name: Lowest Future Import Price (1-12h)
               - entity: input_number.amber_import_forecast_threshold
-                name: Hold if Future Drop <
+                name: "Hold if future drop is below ($):"
               - entity: input_number.amber_import_absolute_override
-                name: Release Hold if Live Price <
-
+                name: "Release hold if live price is below ($):"
 
       # --- MANUAL CONTROLS & MODBUS EXPLANATIONS ---
       - type: vertical-stack
@@ -195,7 +230,7 @@ views:
               Battery discharges to match house load exactly, preventing accidental export.
               <br>
               **4 - Maximise Output**<br>
-              Forces the battery to discharge at maximum capacity to the grid. *(Used by automation for price spikes).*
+              Forces the battery to discharge at maximum capacity to the grid. *(Used by automation for price spikes & solar soaking).*
               <br>
               **5 - Normal Mode**<br>
               Default behavior. Solar charges battery first, then covers house load, then exports excess.
@@ -219,48 +254,86 @@ views:
               - entity: input_button.alphaess_helper_dispatch_reset_full
                 name: Reset to Normal Mode
 
-  - title: Advanced Tuning
+  # =========================================================================
+  # VIEW 2: CONFIGURATION & TUNING
+  # =========================================================================
+  - title: Configuration & Tuning
     icon: mdi:tune-variant
     cards:
-      # --- HYSTERESIS & SOC DEBOUNCE ---
+      # --- SOLAR SOAK & CURTAILMENT CONFIGURATION ---
       - type: vertical-stack
         cards:
           - type: markdown
             content: >
-              ### ↕️ Logic Tuning (Hysteresis)
-
-              Hysteresis prevents the system from rapidly toggling when prices or battery SOC hover near your configured thresholds.
-
-
+              ### ☀️ Solar Soak & Curtailment Configuration
+              
+              Configure the parameters used to calculate solar headroom, pre-export target SOCs, and negative price thresholds.
+              
               **How it works:**
-
-
-              - **Entry (no buffer):** A tier activates the moment a threshold is crossed — there is no delay or buffer on the way in.
-
-              - **Exit (buffered):** Once a tier is active, it only deactivates once the price or SOC has moved *beyond* the threshold by the hysteresis amount. Small fluctuations back below the line are ignored.
-
-
+              
+              - **Solar Headroom:** Calculates required capacity as `(Solcast 10% kWh × Weight) / Battery Capacity kWh × 100`.
+              - **Pre-Export Target:** Pre-discharges down to `Max Target SOC - Required Headroom %` (protected by your Minimum SOC Floor).
+              - **Negative Curtailment:** Automatically halts exports when live feed-in price drops below the configured threshold.
+              
               ---
-
-
-              **Price Hysteresis (${{ states('input_number.amber_price_hysteresis') }}/kWh):** Once a price tier is active, the price must fall this far *below* the trigger price before the tier deactivates.
-
-
-              **SOC Hysteresis ({{ states('input_number.amber_soc_hysteresis') }}%):** Once a SOC tier is active, the battery SOC must move this far *beyond* the SOC threshold before the tier deactivates. This prevents rapid export on/off switching when solar output keeps the battery hovering right at the threshold.
-
-
-              **Export Minimum SOC Guard ({{ states('input_number.amber_export_min_soc_guard') }}%):** Exports are blocked entirely when battery SOC is at or below this level, regardless of tier rules. Increase to protect battery warranty or reserve capacity for evening use.
+              
+              **Current Configuration Status:**
+              
+              * **Calculated Target SOC:** **{{ states('sensor.amber_solar_soak_target_soc') | int(20) }}%** (Solcast Yield: {{ states('sensor.amber_solcast_10_forecast') | float(0) }} kWh)
+              * **Usable Battery Capacity:** **{{ states('input_number.amber_battery_capacity') }} kWh** (Max Target Ceiling: {{ states('input_number.amber_soak_max_target_soc') }}%)
+              * **Pre-Export Min Feed-in:** **${{ states('input_number.amber_soak_min_pre_export_price') }}/kWh** (Protected Floor: {{ states('input_number.amber_soak_min_soc') }}%)
+              * **Curtailment Floor:** **${{ states('input_number.amber_curtailment_price_threshold') }}/kWh**
           - type: entities
             entities:
               - type: section
-                label: Price Hysteresis
+                label: Battery Capacity & Target Ceiling
+              - entity: input_number.amber_battery_capacity
+                name: "Total battery usable capacity (kWh):"
+              - entity: input_number.amber_soak_max_target_soc
+                name: "Maximum SOC ceiling for solar (%):"
+              - type: section
+                label: Solar Soak Pre-Export Rules
+              - entity: input_number.amber_soak_forecast_weight
+                name: "Solcast forecast weight multiplier:"
+              - entity: input_number.amber_soak_min_soc
+                name: "Minimum SOC floor to protect (%):"
+              - entity: input_number.amber_soak_min_pre_export_price
+                name: "Pre-export if price ($) is above:"
+              - type: section
+                label: Negative Price Curtailment
+              - entity: input_number.amber_curtailment_price_threshold
+                name: "Curtail if price ($) is below:"
+
+      # --- HYSTERESIS & SYSTEM SAFEGUARDS ---
+      - type: vertical-stack
+        cards:
+          - type: markdown
+            content: >
+              ### ↕️ Logic Tuning (Hysteresis & Safeguards)
+
+              Hysteresis prevents the system from rapidly toggling when prices or battery SOC hover near your configured thresholds.
+
+              **How it works:**
+
+              - **Entry (no buffer):** A tier activates the moment a threshold is crossed — there is no delay or buffer on the way in.
+              - **Exit (buffered):** Once a tier is active, it only deactivates once the price or SOC has moved *beyond* the threshold by the hysteresis amount. Small fluctuations back below the line are ignored.
+
+              ---
+
+              **Price Hysteresis (${{ states('input_number.amber_price_hysteresis') }}/kWh):** Once a price tier is active, the price must fall this far *below* the trigger price before the tier deactivates.
+
+              **SOC Hysteresis ({{ states('input_number.amber_soc_hysteresis') }}%):** Once a SOC tier is active, the battery SOC must move this far *beyond* the SOC threshold before the tier deactivates.
+
+              **Export Minimum SOC Guard ({{ states('input_number.amber_export_min_soc_guard') }}%):** Hard floor on general tier exporting. Exporting is blocked entirely when battery SOC is at or below this level.
+          - type: entities
+            entities:
+              - type: section
+                label: Price & SOC Hysteresis Buffers
               - entity: input_number.amber_price_hysteresis
-                name: Price Hysteresis Buffer ($/kWh)
-              - type: section
-                label: SOC Hysteresis (Debounce)
+                name: "Price hysteresis buffer ($/kWh):"
               - entity: input_number.amber_soc_hysteresis
-                name: SOC Hysteresis Buffer (%)
+                name: "SOC hysteresis buffer (%):"
               - type: section
-                label: Export SOC Guard
+                label: Emergency Safeguard Floor
               - entity: input_number.amber_export_min_soc_guard
-                name: Export Minimum SOC Guard (%)
+                name: "Export minimum SOC guard (%):"
