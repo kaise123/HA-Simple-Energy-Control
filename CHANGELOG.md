@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.2.1] - 2026-08-26
+
+### Fixed
+- **Continuous Dispatch Expiry Bug**: Fixed an issue where export/import operations running longer than 60 minutes stopped when the hardware duration timer expired because steady-state runs skipped re-dispatching.
+- **Rate-Limited Keep-Alive Refresh**: Added a 45-minute keep-alive renewal and dispatch-off timeout trigger that refreshes active dispatch sessions seamlessly without sending redundant Modbus writes during regular price and SOC ticks.
+- **Datetime Exception Risk**: Fixed a Jinja template vulnerability in the Keep-Alive block by replacing `default(0)` with `as_timestamp(0)` on `last_changed` attributes, preventing hard crashes during Home Assistant startup.
+- **Missing State-Change Notifications**: Resolved a bug where rapid state shifts (e.g. going from 'Idle' directly to 'Solar Curtailed') failed to trigger mobile push notifications due to deeply nested logic traps.
+
+### Changed
+- **Unified Notification Manager**: Completely decoupled push notifications from Modbus dispatch blocks. The automation now evaluates state changes at the very beginning of the run and triggers a single, deduplicated, context-rich push notification mapping 1:1 with the active logic choice.
+- **Dashboard Layout Polish**: Restructured the "Predictive Solar Soak & Curtailment" and "Predictive Battery Hold" cards in `dashboard.yaml` to match the clean, readable format of the "Export Tiers" card.
+
+---
+
+## [1.2.0] - 2026-08-21
+
+### Added
+- **Predictive Solar Soaking (`input_boolean.amber_solar_soak_enabled`)**: Automatically pre-discharges the battery during the morning positive feed-in price window down to a calculated target SOC when Solcast forecasts excess solar generation during an upcoming negative price dip.
+- **Negative Price Curtailment (`input_boolean.amber_curtailment_enabled`)**: Automatically halts all export dispatch modes and resets the inverter to Normal Mode (Mode 5 / self-consumption) when feed-in prices drop below `input_number.amber_curtailment_price_threshold` (default: $0.00/kWh).
+- **Solcast 10% Forecast Template Sensor (`sensor.amber_solcast_10_forecast`)**: Resiliently extracts conservative 10th percentile solar generation estimates (kWh) from Solcast via `estimate10`, `pv_estimate10`, or `detailedForecast` attributes.
+- **Negative Export 12h Template Sensor (`sensor.amber_negative_export_forecast_12h`)**: Analyzes the upcoming 12 hours of Amber Express feed-in forecasts to detect upcoming negative price intervals.
+- **Solar Soak Target SOC Sensor (`sensor.amber_solar_soak_target_soc`)**: Calculates the optimal battery headroom percentage required to absorb expected excess midday solar.
+- **Dedicated Solar Soak Minimum SOC Floor (`input_number.amber_soak_min_soc`)**: Configurable floor to prevent solar soak pre-exporting from discharging the battery below a user-defined reserve (default: 20%), independent of the emergency export SOC guard.
+- **Configurable Soak Parameters**:
+  - `input_number.amber_battery_capacity`: Total battery capacity (kWh).
+  - `input_number.amber_soak_max_target_soc`: Maximum SOC ceiling for solar charging (default: 95%).
+  - `input_number.amber_soak_forecast_weight`: Multiplier to scale Solcast estimates up or down (range: 0.20–2.00, default: 1.00).
+  - `input_number.amber_soak_min_pre_export_price`: Minimum positive feed-in price required before discharging for solar soak (default: $0.05/kWh).
+  - `input_number.amber_curtailment_price_threshold`: Feed-in price below which curtailment engages (default: $0.00/kWh).
+- **Dashboard Solar Soak & Curtailment Control Card**: New interactive card in `dashboard.yaml` displaying live Solcast 10% forecast, target soak SOC, negative pricing alerts, and full slider tuning controls.
+- **Solar Soak & Curtailment Push Notifications**: Distinct mobile notifications when pre-exporting or negative-price curtailment triggers.
+
+### Changed
+- **Automation State Machine**: Updated priority sequence to evaluate curtailment, predictive holds, solar soak pre-exporting, and standard tiers in strict hierarchical order.
+- **Export Trigger**: Updated to support both standard export tiers (checked against `amber_export_min_soc_guard`) and solar soak pre-exporting (checked against `amber_soak_min_soc`).
+- **Trigger List**: Expanded to react dynamically to Solcast updates, negative price forecasts, and all new Solar Soak / Curtailment tuning helpers.
+
+---
+
 ## [1.1.1] - 2026-08-14
 
 ### Fixed
