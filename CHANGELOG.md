@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.2.2] - 2026-08-27
+
+### Fixed
+- **60-Minute Timeout Reset Bug**: Fixed an issue where the 60-minute hardware dispatch timer failed to renew seamlessly. The keep-alive routine now actively monitors `timer.alphaess_helper_dispatch_timer` and oscillates `input_number.alphaess_helper_dispatch_duration` (between 60 and 59) to force Modbus state updates without dropping the active dispatch session.
+
 ## [1.2.1] - 2026-08-26
 
 ### Fixed

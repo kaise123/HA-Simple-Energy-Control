@@ -579,6 +579,13 @@ automation:
         entity_id: input_boolean.alphaess_helper_dispatch
         to: "off"
 
+      # Pre-emptive re-arm: Trigger when the dispatch timer has less than 5 minutes remaining
+      - platform: template
+        value_template: >
+          {{ states('timer.alphaess_helper_dispatch_timer') == 'active' and
+             state_attr('timer.alphaess_helper_dispatch_timer', 'finishes_at') is not none and
+             (as_timestamp(state_attr('timer.alphaess_helper_dispatch_timer', 'finishes_at')) - as_timestamp(now())) < 300 }}
+
     action:
       - variables:
           # 1. Fetch current states
@@ -808,7 +815,12 @@ automation:
                     target:
                       entity_id: input_number.alphaess_helper_dispatch_duration
                     data:
-                      value: 60
+                      value: >
+                        {% if states('input_number.alphaess_helper_dispatch_duration') | float(0) == 60 %}
+                          59
+                        {% else %}
+                          60
+                        {% endif %}
                   - service: input_boolean.turn_on
                     target:
                       entity_id: input_boolean.alphaess_helper_dispatch
@@ -844,7 +856,12 @@ automation:
                     target:
                       entity_id: input_number.alphaess_helper_dispatch_duration
                     data:
-                      value: 60
+                      value: >
+                        {% if states('input_number.alphaess_helper_dispatch_duration') | float(0) == 60 %}
+                          59
+                        {% else %}
+                          60
+                        {% endif %}
                   - service: input_boolean.turn_on
                     target:
                       entity_id: input_boolean.alphaess_helper_dispatch
