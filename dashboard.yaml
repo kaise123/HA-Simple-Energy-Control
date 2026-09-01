@@ -73,13 +73,13 @@ views:
             content: >
               ### ☀️ Predictive Solar Soak & Curtailment
               
-              Pre-discharges the battery during positive morning prices to absorb negative midday solar, and halts exports if feed-in prices turn negative.
+              Pre-discharges the battery during the most profitable window to absorb upcoming midday solar, and halts exports if feed-in prices turn negative and the battery is full.
               
               **Your Current Active Rules:**
               
               {% if is_state('input_boolean.amber_solar_soak_enabled', 'on') %}✅{% else %}❌{% endif %} **Solar Soak:** Pre-export down to **{{ states('sensor.amber_solar_soak_target_soc') | int(20) }}%** (min floor **{{ states('input_number.amber_soak_min_soc') }}%**) if feed-in is above **${{ states('input_number.amber_soak_min_pre_export_price') }}**.
               
-              {% if is_state('input_boolean.amber_curtailment_enabled', 'on') %}✅{% else %}❌{% endif %} **Curtailment:** Halt exports and return to Normal Mode if feed-in drops below **${{ states('input_number.amber_curtailment_price_threshold') }}**.
+              {% if is_state('input_boolean.amber_curtailment_enabled', 'on') %}✅{% else %}❌{% endif %} **Curtailment:** Halt exports when battery is full if feed-in drops below **${{ states('input_number.amber_curtailment_price_threshold') }}**.
           - type: entities
             entities:
               - type: section
@@ -88,10 +88,14 @@ views:
                 name: Enable Solar Soak Pre-Export
               - entity: sensor.amber_solar_soak_target_soc
                 name: Calculated Soak Target SOC
+              - entity: sensor.amber_average_daytime_house_load
+                name: Average Daytime House Load
               - entity: sensor.amber_solcast_10_forecast
                 name: Solcast 10% Yield Forecast
               - entity: sensor.amber_negative_export_forecast_12h
-                name: Negative Price Expected (12h)
+                name: Optimal Pre-Export Active
+              - entity: input_number.amber_inverter_power
+                name: "Inverter Power Limit (kW):"
               - entity: input_number.amber_soak_min_pre_export_price
                 name: "Pre-export if price ($) is above:"
               - entity: input_number.amber_soak_min_soc
@@ -271,16 +275,18 @@ views:
               
               **How it works:**
               
-              - **Solar Headroom:** Calculates required capacity as `(Solcast 10% kWh × Weight) / Battery Capacity kWh × 100`.
+              - **Solar Headroom:** Calculates required capacity as `((Solcast 10% kWh × Weight) - Average Daytime Load) / Battery Capacity kWh × 100`.
               - **Pre-Export Target:** Pre-discharges down to `Max Target SOC - Required Headroom %` (protected by your Minimum SOC Floor).
-              - **Negative Curtailment:** Automatically halts exports when live feed-in price drops below the configured threshold.
+              - **Dynamic Timing:** Automatically finds the most profitable discharge window based on your Inverter Power Limit.
+              - **Negative Curtailment:** Automatically halts exports when live feed-in price drops below the configured threshold and the battery is full.
               
               ---
               
               **Current Configuration Status:**
               
-              * **Calculated Target SOC:** **{{ states('sensor.amber_solar_soak_target_soc') | int(20) }}%** (Solcast Yield: {{ states('sensor.amber_solcast_10_forecast') | float(0) }} kWh)
+              * **Calculated Target SOC:** **{{ states('sensor.amber_solar_soak_target_soc') | int(20) }}%** (Solcast: {{ states('sensor.amber_solcast_10_forecast') | float(0) }} kWh, Load: {{ states('sensor.amber_average_daytime_house_load') | float(0) }} kWh)
               * **Usable Battery Capacity:** **{{ states('input_number.amber_battery_capacity') }} kWh** (Max Target Ceiling: {{ states('input_number.amber_soak_max_target_soc') }}%)
+              * **Inverter Power Limit:** **{{ states('input_number.amber_inverter_power') }} kW**
               * **Pre-Export Min Feed-in:** **${{ states('input_number.amber_soak_min_pre_export_price') }}/kWh** (Protected Floor: {{ states('input_number.amber_soak_min_soc') }}%)
               * **Curtailment Floor:** **${{ states('input_number.amber_curtailment_price_threshold') }}/kWh**
           - type: entities
@@ -295,6 +301,8 @@ views:
                 label: Solar Soak Pre-Export Rules
               - entity: input_number.amber_soak_forecast_weight
                 name: "Solcast forecast weight multiplier:"
+              - entity: input_number.amber_inverter_power
+                name: "Inverter Power Limit (kW):"
               - entity: input_number.amber_soak_min_soc
                 name: "Minimum SOC floor to protect (%):"
               - entity: input_number.amber_soak_min_pre_export_price

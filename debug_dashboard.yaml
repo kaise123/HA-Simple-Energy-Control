@@ -64,7 +64,8 @@ views:
               {% set enabled = is_state('input_boolean.amber_automation_enabled', 'on') %}
               
               {% set curtailment_thresh = states('input_number.amber_curtailment_price_threshold') | float(0.00) %}
-              {% set curtailment_active = is_state('input_boolean.amber_curtailment_enabled', 'on') and exp_price <= curtailment_thresh %}
+              {% set currently_curtailed = 'Solar Curtailed' in current_status %}
+              {% set curtailment_active = is_state('input_boolean.amber_curtailment_enabled', 'on') and is_state('sensor.alphaess_battery_full', 'true') and (((currently_curtailed and exp_price <= (curtailment_thresh + hysteresis))) or (not currently_curtailed and exp_price <= curtailment_thresh)) %}
               
               {% set pred_exp_thresh = states('input_number.amber_export_forecast_threshold') | float(99) %}
               {% set pred_exp_override = states('input_number.amber_export_absolute_override') | float(99) %}

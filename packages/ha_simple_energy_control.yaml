@@ -73,6 +73,24 @@
 #
 # ===========================================================================
 
+utility_meter:
+  amber_house_load_split:
+    source: sensor.shelly_ct1_energy
+    name: Amber House Load Split
+    tariffs:
+      - day
+      - night
+
+sensor:
+  - platform: statistics
+    name: "Amber 7-Day Daytime House Load"
+    unique_id: amber_7_day_daytime_house_load
+    entity_id: sensor.amber_house_load_split_day
+    state_characteristic: change
+    max_age:
+      days: 7
+    sampling_size: 20000
+
 # ---------------------------------------------------------------------------
 # TEMPLATE SENSORS
 # Scans forecast arrays (Amber Express & Solcast) for price spikes, negative
@@ -172,33 +190,117 @@ template:
           {% endfor %}
           {{ ns.val if ns.found else 0.0 }}
 
-      # Detects if negative (or below threshold) export prices are anticipated in the next 1–12 hours.
-      # Used by Solar Soak to determine if pre-exporting is necessary ahead of the negative price dip.
+      # Historical 7-day average of daytime house load
+      - name: "Amber Average Daytime House Load"
+        unique_id: amber_average_daytime_house_load
+        unit_of_measurement: "kWh"
+        icon: mdi:home-lightning-bolt
+        state: >
+          {% set change = states('sensor.amber_7_day_daytime_house_load') | float(0) %}
+          {{ (change / 7.0) | round(2) }}
+
+      # Detects optimal discharge window for Solar Soak by finding the highest average
+      # feed-in tariff block before a forecasted negative price drop.
       - name: "Amber Negative Export Forecast 12h"
         unique_id: amber_negative_export_forecast_12h
         icon: mdi:alert-circle-outline
         state: >
           {% set fcast = state_attr('sensor.amber_express_home_feed_in_price', 'forecast') %}
           {% set thresh = states('input_number.amber_curtailment_price_threshold') | float(0.00) %}
-          {% if fcast %}
-            {% set start = now() + timedelta(hours=1) %}
-            {% set end = now() + timedelta(hours=12) %}
-            {% set ns = namespace(has_negative=false) %}
+          {% set current_soc = states('sensor.alphaess_soc_battery') | float(0) %}
+          {% set target_soc = states('sensor.amber_solar_soak_target_soc') | float(0) %}
+          {% set batt_cap = states('input_number.amber_battery_capacity') | float(10.0) %}
+          {% set inverter_power = states('input_number.amber_inverter_power') | float(5.0) %}
+          
+          {% set soc_to_discharge = current_soc - target_soc %}
+          {% if soc_to_discharge > 0 and inverter_power > 0 and batt_cap > 0 %}
+            {% set kwh_to_discharge = (soc_to_discharge / 100) * batt_cap %}
+            {% set hours_needed = kwh_to_discharge / inverter_power %}
+            {# Add a 30-minute buffer #}
+            {% set hours_needed = hours_needed + 0.5 %}
+          {% else %}
+            {% set hours_needed = 0 %}
+          {% endif %}
+
+          {% if fcast and hours_needed > 0 %}
+            {% set start_horizon = now() %}
+            {% set end_horizon = now() + timedelta(hours=12) %}
+            
+            {# Find the first negative price (cutoff time) #}
+            {% set ns = namespace(t_neg=none) %}
             {% for item in fcast %}
               {% set item_dt = as_datetime(item.time) %}
-              {% if item_dt is not none and item_dt > start and item_dt <= end %}
+              {% if item_dt is not none and item_dt > start_horizon and item_dt <= end_horizon and ns.t_neg is none %}
                 {% if item.value | float(0) <= thresh %}
-                  {% set ns.has_negative = true %}
+                  {% set ns.t_neg = item_dt %}
                 {% endif %}
               {% endif %}
             {% endfor %}
-            {{ 'on' if ns.has_negative else 'off' }}
+
+            {% if ns.t_neg is not none %}
+              {% set time_until_neg = (ns.t_neg - now()).total_seconds() / 3600 %}
+              {% if time_until_neg <= hours_needed %}
+                {# Not enough time to fit the whole window, start immediately #}
+                on
+              {% else %}
+                {# Find the most profitable discharge window #}
+                {% set opt = namespace(best_avg=-999, best_start=now()) %}
+                {% for start_item in fcast %}
+                  {% set w_start = as_datetime(start_item.time) %}
+                  {% if w_start is not none %}
+                    {% set w_end = w_start + timedelta(hours=hours_needed) %}
+                    {% if w_start >= (now() - timedelta(minutes=30)) and w_end <= ns.t_neg %}
+                      {% set w_ns = namespace(sum=0, count=0) %}
+                      {% for w_item in fcast %}
+                        {% set w_item_dt = as_datetime(w_item.time) %}
+                        {% if w_item_dt is not none and w_item_dt >= w_start and w_item_dt < w_end %}
+                          {% set w_ns.sum = w_ns.sum + (w_item.value | float(0)) %}
+                          {% set w_ns.count = w_ns.count + 1 %}
+                        {% endif %}
+                      {% endfor %}
+                      {% if w_ns.count > 0 %}
+                        {% set avg_price = w_ns.sum / w_ns.count %}
+                        {% if avg_price > opt.best_avg %}
+                          {% set opt.best_avg = avg_price %}
+                          {% set opt.best_start = w_start %}
+                        {% endif %}
+                      {% endif %}
+                    {% endif %}
+                  {% endif %}
+                {% endfor %}
+                
+                {# Trigger if we are currently inside or past the optimal start time #}
+                {% if now() >= opt.best_start %}
+                  on
+                {% else %}
+                  off
+                {% endif %}
+              {% endif %}
+            {% else %}
+              off
+            {% endif %}
           {% else %}
             off
           {% endif %}
 
+  - trigger:
+      # Freeze the target SOC calculation to early morning (midnight & 6AM) 
+      # to prevent micro-adjustments as the Solcast forecast dances during the day.
+      - platform: time
+        at: "00:01:00"
+      - platform: time
+        at: "06:00:00"
+      - platform: homeassistant
+        event: start
+      - platform: state
+        entity_id:
+          - input_number.amber_soak_forecast_weight
+          - input_number.amber_battery_capacity
+          - input_number.amber_soak_max_target_soc
+          - input_number.amber_soak_min_soc
+    sensor:
       # Calculates the target battery SOC to pre-discharge down to before the negative price window.
-      # Formula: Target SOC = Max Target SOC - ((Solcast 10% kWh * Weight) / Battery Capacity kWh) * 100
+      # Formula: Target SOC = Max Target SOC - (((Solcast 10% kWh * Weight) - Daytime House Load) / Battery Capacity kWh) * 100
       # Clamped between amber_soak_min_soc and amber_soak_max_target_soc.
       - name: "Amber Solar Soak Target SOC"
         unique_id: amber_solar_soak_target_soc
@@ -208,12 +310,14 @@ template:
         state: >
           {% set solcast_kwh = states('sensor.amber_solcast_10_forecast') | float(0) %}
           {% set weight = states('input_number.amber_soak_forecast_weight') | float(1.0) %}
+          {% set house_load = states('sensor.amber_average_daytime_house_load') | float(0) %}
           {% set batt_cap = states('input_number.amber_battery_capacity') | float(10.0) %}
           {% set max_target_soc = states('input_number.amber_soak_max_target_soc') | float(95) %}
           {% set min_soak_soc = states('input_number.amber_soak_min_soc') | float(20) %}
           {% if batt_cap > 0 %}
-            {% set expected_solar_kwh = solcast_kwh * weight %}
-            {% set required_headroom_pct = (expected_solar_kwh / batt_cap) * 100.0 %}
+            {% set expected_solar_to_batt = (solcast_kwh * weight) - house_load %}
+            {% set expected_solar_to_batt = expected_solar_to_batt if expected_solar_to_batt > 0 else 0 %}
+            {% set required_headroom_pct = (expected_solar_to_batt / batt_cap) * 100.0 %}
             {% set calculated_target = max_target_soc - required_headroom_pct %}
             {% if calculated_target < min_soak_soc %}
               {{ min_soak_soc | round(0) | int(20) }}
@@ -425,6 +529,15 @@ input_number:
     step: 0.05
     mode: box
 
+  # Maximum inverter discharge power in kW (used to calculate soak duration)
+  amber_inverter_power:
+    name: Inverter Power Limit
+    min: 1.0
+    max: 20.0
+    step: 0.1
+    mode: box
+    unit_of_measurement: "kW"
+
   # Minimum positive feed-in price required before discharging for solar soak
   amber_soak_min_pre_export_price:
     name: Min Feed-in Price to Pre-Export
@@ -503,6 +616,22 @@ input_text:
 # AUTOMATION
 # ---------------------------------------------------------------------------
 automation:
+  - id: amber_house_load_tariff_switch
+    alias: "Amber House Load Tariff Switch"
+    trigger:
+      - platform: sun
+        event: sunrise
+        id: 'day'
+      - platform: sun
+        event: sunset
+        id: 'night'
+    action:
+      - service: select.select_option
+        target:
+          entity_id: select.amber_house_load_split
+        data:
+          option: "{{ trigger.id }}"
+
   - id: 'alphaess_amber_optimization_tiered'
     alias: "HA Simple Energy Control: AlphaESS Amber Dispatch"
     description: >
@@ -524,6 +653,7 @@ automation:
           - sensor.alphaess_soc_battery
           - sensor.amber_solar_soak_target_soc
           - sensor.amber_negative_export_forecast_12h
+          - sensor.alphaess_battery_full
         not_to:
           - "unknown"
           - "unavailable"
@@ -604,12 +734,20 @@ automation:
           currently_importing_t1: "{{ 'Importing (Tier 1)' in current_status }}"
           currently_importing_t2: "{{ 'Importing (Tier 2)' in current_status }}"
           currently_soaking: "{{ 'Solar Soak' in current_status }}"
+          currently_curtailed: "{{ 'Solar Curtailed' in current_status }}"
 
           # 3. Negative Price Curtailment Check
-          # Active when curtailment toggle is ON and live feed-in price is at or below threshold
+          # Active when curtailment toggle is ON, battery is full, and live feed-in price is at or below threshold (with hysteresis)
           curtailment_active: >
             {{ is_state('input_boolean.amber_curtailment_enabled', 'on')
-               and export_price <= states('input_number.amber_curtailment_price_threshold')|float(0.00) }}
+               and is_state('sensor.alphaess_battery_full', 'true')
+               and (
+                 (currently_curtailed
+                  and export_price <= (states('input_number.amber_curtailment_price_threshold')|float(0.00) + hysteresis))
+                 or
+                 (not currently_curtailed
+                  and export_price <= states('input_number.amber_curtailment_price_threshold')|float(0.00))
+               ) }}
 
           # 4. Predictive Hold Logic (with absolute overrides)
           pred_exp_active: >
@@ -722,12 +860,14 @@ automation:
             {%- else -%} idle {%- endif -%}
 
           # 8. Human-readable status string — driven entirely from active_action.
+          # We use purely static strings here to prevent spamming notifications 
+          # or Modbus writes when dynamic variables (like live price) fluctuate.
           new_status_text: >
             {%- if active_action == 'disabled' -%} 🔴 Automation Disabled
-            {%- elif active_action == 'curtailed' -%} 🛑 Solar Curtailed (Feed-in ${{ export_price }}/kWh)
+            {%- elif active_action == 'curtailed' -%} 🛑 Solar Curtailed
             {%- elif active_action == 'holding_export' -%} 🛑 Holding Exports (Spike Forecasted!)
             {%- elif active_action == 'holding_import' -%} 🛑 Holding Imports (Drop Forecasted!)
-            {%- elif active_action == 'solar_soak' -%} ☀️ Solar Soak Pre-Export (Target: {{ soak_target_soc | int(20) }}% SoC)
+            {%- elif active_action == 'solar_soak' -%} ☀️ Solar Soak Pre-Export Active
             {%- elif active_action == 'holding_soc_guard' -%} 🛑 Export Blocked (SOC Guard Active)
             {%- elif active_action == 'export_1' -%} 📤 Exporting (Tier 1)
             {%- elif active_action == 'export_2' -%} 📤 Exporting (Tier 2)
