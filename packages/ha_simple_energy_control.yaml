@@ -601,6 +601,9 @@ input_boolean:
   amber_curtailment_enabled:
     name: Enable Negative Price Curtailment
     icon: mdi:shield-sun
+  amber_solar_soak_completed_today:
+    name: Solar Soak Completed Today
+    icon: mdi:check-circle
 
 # ---------------------------------------------------------------------------
 # INPUT TEXT — Status display
@@ -616,6 +619,16 @@ input_text:
 # AUTOMATION
 # ---------------------------------------------------------------------------
 automation:
+  - id: amber_solar_soak_reset
+    alias: "Amber Solar Soak Reset Daily"
+    trigger:
+      - platform: time
+        at: "00:00:00"
+    action:
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.amber_solar_soak_completed_today
+
   - id: amber_house_load_tariff_switch
     alias: "Amber House Load Tariff Switch"
     trigger:
@@ -767,6 +780,7 @@ automation:
             {{ enabled and not curtailment_active and not pred_exp_active
                and is_state('input_boolean.amber_solar_soak_enabled', 'on')
                and is_state('sensor.amber_negative_export_forecast_12h', 'on')
+               and is_state('input_boolean.amber_solar_soak_completed_today', 'off')
                and export_price >= states('input_number.amber_soak_min_pre_export_price')|float(0.05)
                and (
                  (currently_soaking
@@ -882,47 +896,6 @@ automation:
       - condition: template
         value_template: "{{ enabled or 'Automation Disabled' not in current_status }}"
 
-      # Update dashboard status indicator on every run
-      - service: input_text.set_value
-        target:
-          entity_id: input_text.amber_active_tier_status
-        data:
-          value: "{{ new_status_text }}"
-
-      # --- 9. UNIFIED NOTIFICATION MANAGER ---
-      # Fires a context-aware push notification exactly once on every state transition.
-      - if:
-          - condition: template
-            value_template: "{{ current_status != new_status_text }}"
-        then:
-          - service: notify.mobile_app_phone   # ← update to your device
-            data:
-              title: >
-                {% if active_action == 'solar_soak' %}☀️ Solar Soak Pre-Export Active
-                {% elif active_action == 'curtailed' %}🛑 Solar Export Curtailed
-                {% elif active_action == 'idle' %}🔄 HA Simple Energy Control Reset
-                {% elif 'export' in active_action %}📈 Amber Export Initiated!
-                {% elif 'import' in active_action %}📉 Amber Import Initiated!
-                {% elif 'holding' in active_action %}🛑 Predictive Hold Active
-                {% elif active_action == 'disabled' %}🔴 Automation Disabled
-                {% else %}⚡ System State Changed{% endif %}
-              message: >
-                {% if active_action == 'solar_soak' %}
-                  Pre-exporting battery from {{ soc | int(0) }}% down to {{ soak_target_soc | int(20) }}% Target SoC to absorb upcoming midday solar. Feed-in: ${{ export_price }}/kWh.
-                {% elif active_action == 'idle' %}
-                  Prices have normalised. Returning to standard self-consumption.
-                {% elif active_action == 'curtailed' %}
-                  Feed-in price is ${{ export_price }}/kWh. Halting exports to protect against negative tariffs.
-                {% elif active_action == 'disabled' %}
-                  The master switch has been turned off. Returning to manual control.
-                {% elif 'export' in active_action %}
-                  {{ new_status_text }} - Feed-in is ${{ export_price }}/kWh (SOC: {{ soc }}%).
-                {% elif 'import' in active_action %}
-                  {{ new_status_text }} - Import is ${{ import_price }}/kWh (SOC: {{ soc }}%).
-                {% else %}
-                  {{ new_status_text }} (Feed-in: ${{ export_price }}/kWh, Import: ${{ import_price }}/kWh, SOC: {{ soc }}%).
-                {% endif %}
-
       - choose:
           # --- EXPORT / SOLAR SOAK TRIGGER ---
           # Activates Maximise Output (Mode 4) for up to 60 minutes when an export
@@ -1018,6 +991,59 @@ automation:
                   {{ current_status != new_status_text and
                      ('Exporting' in current_status or 'Importing' in current_status or 'Solar Soak' in current_status) }}
             then:
+              - service: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.alphaess_helper_dispatch
               - service: input_button.press
                 target:
                   entity_id: input_button.alphaess_helper_dispatch_reset_full
+              - if:
+                  - condition: template
+                    value_template: "{{ 'Solar Soak' in current_status }}"
+                then:
+                  - service: input_boolean.turn_on
+                    target:
+                      entity_id: input_boolean.amber_solar_soak_completed_today
+
+      # --- 9. UPDATE STATE MACHINE ---
+      # Update dashboard status indicator. This MUST happen AFTER the physical Modbus commands 
+      # above to prevent 'mode: restart' race conditions from swallowing hardware writes.
+      - service: input_text.set_value
+        target:
+          entity_id: input_text.amber_active_tier_status
+        data:
+          value: "{{ new_status_text }}"
+
+      # --- 10. UNIFIED NOTIFICATION MANAGER ---
+      # Fires a context-aware push notification exactly once on every state transition.
+      - if:
+          - condition: template
+            value_template: "{{ current_status != new_status_text }}"
+        then:
+          - service: notify.mobile_app_phone   # ← update to your device
+            data:
+              title: >
+                {% if active_action == 'solar_soak' %}☀️ Solar Soak Pre-Export Active
+                {% elif active_action == 'curtailed' %}🛑 Solar Export Curtailed
+                {% elif active_action == 'idle' %}🔄 HA Simple Energy Control Reset
+                {% elif 'export' in active_action %}📈 Amber Export Initiated!
+                {% elif 'import' in active_action %}📉 Amber Import Initiated!
+                {% elif 'holding' in active_action %}🛑 Predictive Hold Active
+                {% elif active_action == 'disabled' %}🔴 Automation Disabled
+                {% else %}⚡ System State Changed{% endif %}
+              message: >
+                {% if active_action == 'solar_soak' %}
+                  Pre-exporting battery from {{ soc | int(0) }}% down to {{ soak_target_soc | int(20) }}% Target SoC to absorb upcoming midday solar. Feed-in: ${{ export_price }}/kWh.
+                {% elif active_action == 'idle' %}
+                  Prices have normalised. Returning to standard self-consumption.
+                {% elif active_action == 'curtailed' %}
+                  Feed-in price is ${{ export_price }}/kWh. Halting exports to protect against negative tariffs.
+                {% elif active_action == 'disabled' %}
+                  The master switch has been turned off. Returning to manual control.
+                {% elif 'export' in active_action %}
+                  {{ new_status_text }} - Feed-in is ${{ export_price }}/kWh (SOC: {{ soc }}%).
+                {% elif 'import' in active_action %}
+                  {{ new_status_text }} - Import is ${{ import_price }}/kWh (SOC: {{ soc }}%).
+                {% else %}
+                  {{ new_status_text }} (Feed-in: ${{ export_price }}/kWh, Import: ${{ import_price }}/kWh, SOC: {{ soc }}%).
+                {% endif %}
