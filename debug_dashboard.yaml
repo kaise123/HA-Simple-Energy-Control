@@ -79,10 +79,18 @@ views:
               
               {% set soak_target_soc = states('sensor.amber_solar_soak_target_soc') | float(20) %}
               {% set soak_min_soc = states('input_number.amber_soak_min_soc') | float(20) %}
-              {% set soak_min_price = states('input_number.amber_soak_min_pre_export_price') | float(0.05) %}
+              {% set soak_min_price = states('input_number.amber_soak_min_pre_export_price') | float(0.00) %}
               {% set neg_forecast_on = is_state('sensor.amber_negative_export_forecast_12h', 'on') %}
               {% set currently_soaking = 'Solar Soak' in current_status %}
-              {% set soak_exp_active = enabled and not curtailment_active and not pred_exp_active and is_state('input_boolean.amber_solar_soak_enabled', 'on') and neg_forecast_on and exp_price >= soak_min_price and (((currently_soaking and soc > (soak_target_soc - soc_hysteresis) and soc > soak_min_soc)) or (not currently_soaking and soc > soak_target_soc and soc > soak_min_soc)) %}
+              {% set completed_today = is_state('input_boolean.amber_solar_soak_completed_today', 'on') %}
+              {% set active_tiers = [
+                states('input_number.amber_export_price_1')|float(999) if is_state('input_boolean.amber_export_tier_1_enabled', 'on') else 999,
+                states('input_number.amber_export_price_2')|float(999) if is_state('input_boolean.amber_export_tier_2_enabled', 'on') else 999,
+                states('input_number.amber_export_price_3')|float(999) if is_state('input_boolean.amber_export_tier_3_enabled', 'on') else 999
+              ] %}
+              {% set min_tier = active_tiers | min %}
+              {% set tier_export_forecasted = min_tier < 990 and max_exp_12h >= min_tier %}
+              {% set soak_exp_active = enabled and not curtailment_active and not pred_exp_active and not tier_export_forecasted and is_state('input_boolean.amber_solar_soak_enabled', 'on') and not completed_today and neg_forecast_on and exp_price >= soak_min_price and (((currently_soaking and soc > (soak_target_soc - soc_hysteresis) and soc > soak_min_soc)) or (not currently_soaking and soc > soak_target_soc and soc > soak_min_soc)) %}
               
               {% set currently_t1_exp = 'Exporting (Tier 1)' in current_status %}
               {% set t1_exp_soc = states('input_number.amber_export_soc_1') | float(100) %}
@@ -159,7 +167,7 @@ views:
                 * *Values:* 12h Min: ${{ min_imp_12h }} ≤ ${{ pred_imp_thresh }} (Release: ${{ pred_imp_override }})
               * **5. Solar Soak Pre-Export**
                 * *Status:* {% if soak_exp_active %}☀️ **SOAKING**{% else %}⚪ False{% endif %}
-                * *Values:* Neg Forecast: {{ 'YES' if neg_forecast_on else 'NO' }}, Price: ${{ exp_price }} ≥ ${{ soak_min_price }}, SOC: {{ soc }}% > Target {{ soak_target_soc | int(20) }}%
+                * *Values:* Window: {{ 'ACTIVE' if neg_forecast_on else 'WAITING' }}, Done Today: {{ 'YES' if completed_today else 'NO' }}, Future Spike: {{ 'YES' if tier_export_forecasted else 'NO' }}, Price: ${{ exp_price }} ≥ ${{ soak_min_price }}, SOC: {{ soc }}% > Target {{ soak_target_soc | int(20) }}%
               * **6. Export Minimum SOC Guard**
                 * *Status:* {% if exp_guard_active %}🛑 **GUARD ACTIVE**{% else %}⚪ False{% endif %}
                 * *Values:* Tier matched but SOC {{ soc }}% ≤ Guard {{ states('input_number.amber_export_min_soc_guard') }}%
@@ -257,7 +265,7 @@ views:
               - entity: sensor.amber_min_import_forecast_12h
                 name: 12h Min Import Forecast ($/kWh)
               - entity: sensor.amber_negative_export_forecast_12h
-                name: Negative Price Forecast (12h)
+                name: Solar Soak Dispatch Window (24h)
               - type: section
                 label: Solar Forecast & Soak Headroom
               - entity: sensor.solcast_pv_forecast_forecast_remaining_today
@@ -266,6 +274,8 @@ views:
                 name: Extracted Solcast 10% Yield (kWh)
               - entity: sensor.amber_solar_soak_target_soc
                 name: Calculated Soak Target SOC (%)
+              - entity: input_boolean.amber_solar_soak_completed_today
+                name: Solar Soak Completed Today
               - type: section
                 label: Battery State & Power Flows
               - entity: sensor.alphaess_soc_battery
