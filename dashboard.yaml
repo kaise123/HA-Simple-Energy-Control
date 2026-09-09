@@ -94,6 +94,8 @@ views:
                 name: Solcast 10% Yield Forecast
               - entity: sensor.amber_negative_export_forecast_12h
                 name: Optimal Pre-Export Active
+              - entity: input_boolean.amber_solar_soak_completed_today
+                name: Solar Soak Completed Today
               - entity: input_number.amber_inverter_power
                 name: "Inverter Power Limit (kW):"
               - entity: input_number.amber_soak_min_pre_export_price

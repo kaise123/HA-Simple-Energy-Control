@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+- **Solar soak premature completion latch**: Prevented solar soak from locking out for the day when interrupted before reaching target SOC.
+- **Solar soak window flapping**: Implemented session latching to ensure pre-export executes in a single continuous block without forecast jitter.
+- **Forecast horizon truncation**: Expanded solar soak and max export forecast search horizon to 24h to capture afternoon negative prices and price spikes from midnight.
+- **Surplus-driven pre-export trigger**: Enabled pre-export whenever surplus solar is predicted rather than strictly requiring a negative price forecast.
+- **High future price protection**: Inhibited solar soak pre-export if high export prices or active export tiers are forecast later in the day.
+- **Daily cycle manager**: Added 10:30 AM cutoff to prevent afternoon pre-exporting after solar recharge.
+
 ---
 
 ## [1.2.2] - 2026-08-27
