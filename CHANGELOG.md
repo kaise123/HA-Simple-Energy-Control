@@ -4,15 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [1.3.0] - 2026-09-09
+
+### Added
+- **Surplus-Driven Solar Soak**: Pre-export now triggers based directly on Solcast surplus forecast, ensuring battery headroom is prepared even before Amber explicitly predicts negative prices.
+- **24-Hour Forecast Horizon**: Expanded forecast search horizon across solar soak and max export templates from 12h to 24h, making afternoon negative tariffs and price spikes visible overnight.
+- **Session Latching (Anti-Flapping)**: Once pre-export begins, the window detector locks active until target SOC is achieved, guaranteeing discharge in a single continuous block.
+- **High Future Price & Export Tier Protection**: Automatically inhibits solar soak pre-export if high prices or active export tiers are forecast later in the day, preserving battery capacity for peak revenue.
+- **Historical Daytime House Load Integration**: Added `utility_meter.amber_house_load_split` and 7-day daytime load statistics sensor to deduct realistic household consumption from Solcast estimates.
+- **Inverter Power Limit Helper (`input_number.amber_inverter_power`)**: Configurable discharge rate (kW) used to dynamically calculate required pre-export duration.
+- **Daily Cycle Manager Cutoff**: Added a 10:30 AM daytime cutoff trigger to `amber_solar_soak_reset` to prevent unintended afternoon pre-exporting after solar recharge.
+- **Sun-Based Tariff Switcher (`amber_house_load_tariff_switch`)**: Automatically switches house load utility meter tariffs at sunrise and sunset.
+- **Dashboard Synchronization**: Exposed `input_boolean.amber_solar_soak_completed_today` on both production and debug dashboards.
 
 ### Fixed
-- **Solar soak premature completion latch**: Prevented solar soak from locking out for the day when interrupted before reaching target SOC.
-- **Solar soak window flapping**: Implemented session latching to ensure pre-export executes in a single continuous block without forecast jitter.
-- **Forecast horizon truncation**: Expanded solar soak and max export forecast search horizon to 24h to capture afternoon negative prices and price spikes from midnight.
-- **Surplus-driven pre-export trigger**: Enabled pre-export whenever surplus solar is predicted rather than strictly requiring a negative price forecast.
-- **High future price protection**: Inhibited solar soak pre-export if high export prices or active export tiers are forecast later in the day.
-- **Daily cycle manager**: Added 10:30 AM cutoff to prevent afternoon pre-exporting after solar recharge.
+- **Premature Solar Soak Lockout**: Resolved bug where any temporary transition out of Solar Soak marked `amber_solar_soak_completed_today` on; flag now only sets when target SOC is satisfied.
+- **Negative Price Curtailment Gate**: Added battery-full check (`sensor.alphaess_battery_full`) and price hysteresis to curtailment logic, ensuring battery charges from solar before exports are halted.
+- **Intraday Target SOC Jitter**: Stabilized target SOC calculation by triggering at midnight, 6:00 AM, and on helper adjustments.
+- **Static Status Strings**: Replaced dynamic strings in status text with static strings to eliminate notification and Modbus spam on price fluctuations.
 
 ---
 
