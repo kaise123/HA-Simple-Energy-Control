@@ -915,7 +915,8 @@ automation:
             {%- if not enabled -%} disabled
             {%- elif curtailment_active -%} curtailed
             {%- elif soak_exp_active -%} solar_soak
-            {%- elif pred_exp_active or (tier_export_forecasted and not (t1_exp or t2_exp or t3_exp)) -%} holding_export
+            {%- elif pred_exp_active -%} holding_spike
+            {%- elif tier_export_forecasted and not (t1_exp or t2_exp or t3_exp) -%} holding_tier
             {%- elif pred_imp_active -%} holding_import
             {%- elif (t1_exp or t2_exp or t3_exp) and soc <= states('input_number.amber_export_min_soc_guard') | float(10) -%} holding_soc_guard
             {%- elif t1_exp -%} export_1
@@ -931,7 +932,8 @@ automation:
           new_status_text: >
             {%- if active_action == 'disabled' -%} 🔴 Automation Disabled
             {%- elif active_action == 'curtailed' -%} 🛑 Solar Curtailed
-            {%- elif active_action == 'holding_export' -%} 🛑 Holding Exports (Spike Forecasted!)
+            {%- elif active_action == 'holding_spike' -%} 🛑 Holding Exports (Spike Forecasted!)
+            {%- elif active_action == 'holding_tier' -%} 🛑 Holding Exports (Waiting for Tier)
             {%- elif active_action == 'holding_import' -%} 🛑 Holding Imports (Drop Forecasted!)
             {%- elif active_action == 'solar_soak' -%} ☀️ Solar Soak Pre-Export Active
             {%- elif active_action == 'holding_soc_guard' -%} 🛑 Export Blocked (SOC Guard Active)
