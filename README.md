@@ -6,9 +6,9 @@ This can easily be adapted to work with other battery systems and energy provide
 
 ## Features
 
-* **Multi-Tier Export and Import Rules:** Define price thresholds that adjust dynamically based on current battery capacity. For example, configure the system to export at $0.20/kWh when SOC is >80%, but require $1.00/kWh when SOC is <30%.
+* **Multi-Tier Export and Import Rules:** Define price thresholds that adjust dynamically based on current battery capacity. For example, configure the system to export at 20c/kWh when SOC is >80%, but require 100c/kWh when SOC is <30%.
 * **Predictive Solar Soaking (Pre-Exporting):** Anticipates upcoming midday negative feed-in periods. When Solcast forecasts high solar generation that will exceed battery capacity during negative prices, the system pre-discharges the battery during the morning positive-price window down to a calculated target SOC, creating headroom to soak 100% of solar generation locally.
-* **Negative Feed-in Price Curtailment:** Automatically halts exports and resets the inverter to Normal self-consumption mode when feed-in prices drop below your configured threshold (e.g. $\le \$0.00$/kWh), preventing costly negative export penalties.
+* **Negative Feed-in Price Curtailment:** Automatically halts exports and resets the inverter to Normal self-consumption mode when feed-in prices drop below your configured threshold (e.g. ≤ 0c/kWh), preventing costly negative export penalties.
 * **Optimised Grid Charging:** When import prices drop below your threshold, the system activates AlphaESS **Optimise Consumption (Mode 6)** — which force-charges the battery at full power from the grid while PV output also contributes.
 * **Predictive Holds:** Evaluates the next 12 hours of Amber Express price forecasts. If a significant price spike or drop is anticipated, the system temporarily suspends standard rules to preserve battery capacity for higher returns or lower charging costs.
 * **Hysteresis & Safeguards:** Applies configurable buffers to price and SOC thresholds to prevent rapid mode toggling, with dedicated minimum SOC floors for both standard exporting and solar soak pre-exporting.
@@ -132,10 +132,10 @@ Go to **Settings → System → Restart**. After restarting, all helpers, templa
 Wholesale electricity prices often plunge into negative territory during midday peak solar generation hours. When this occurs, exporting excess solar costs you money.
 
 The **Predictive Solar Soak** feature solves this proactively:
-1. It monitors Amber Express 12-hour feed-in price forecasts for upcoming negative intervals ($\le \$0.00$/kWh).
+1. It monitors Amber Express 12-hour feed-in price forecasts for upcoming negative intervals (≤ 0c/kWh).
 2. When a negative period is detected, it calculates expected excess solar yield using Solcast's conservative 10% forecast (`estimate10` / `pv_estimate10`) and your configured forecast weight.
 3. It derives a **Soak Target SOC** indicating how much battery capacity must be made available to soak up solar generation during the negative pricing window.
-4. During the morning positive-price window (when feed-in price $\ge$ Min Pre-Export Price), the system engages **Mode 4 (Maximise Output)** to pre-discharge the battery down to the target SOC.
+4. During the morning positive-price window (when feed-in price ≥ Min Pre-Export Price), the system engages **Mode 4 (Maximise Output)** to pre-discharge the battery down to the target SOC.
 5. Once discharged, the battery sits ready to absorb 100% of solar generation when negative prices hit.
 
 ### Negative Price Curtailment
@@ -151,7 +151,7 @@ The automation evaluates rules in descending priority from Tier 1 to Tier 3.
 
 ### Predictive Holds
 
-When enabled, the system evaluates the `forecasts` attribute of the Amber Express price sensors 12 hours ahead. For example, if a Tier 1 rule is set to export at $0.30/kWh, but the forecast shows a $1.50/kWh peak later in the day, the system blocks immediate export to preserve battery capacity — provided the forecasted peak exceeds your configured predictive threshold.
+When enabled, the system evaluates the `forecasts` attribute of the Amber Express price sensors 12 hours ahead. For example, if a Tier 1 rule is set to export at 30c/kWh, but the forecast shows a 150c/kWh peak later in the day, the system blocks immediate export to preserve battery capacity — provided the forecasted peak exceeds your configured predictive threshold.
 
 ### Dispatch Duration and Failsafe
 

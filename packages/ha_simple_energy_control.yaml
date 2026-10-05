@@ -306,7 +306,7 @@ template:
           {% endif %}
 
   - trigger:
-      # Freeze the target SOC calculation to early morning (midnight & 6AM) 
+      # Freeze the target SOC calculation to specific times (midnight, 6AM, 4PM)
       # to prevent micro-adjustments as the Solcast forecast dances during the day.
       - platform: time
         at: "00:01:00"
@@ -648,7 +648,7 @@ automation:
     trigger:
       - platform: time
         at: "16:00:00"
-        id: "midnight_reset"
+        id: "cycle_reset"
       - platform: time
         at: "10:30:00"
         id: "daytime_cutoff"
@@ -656,7 +656,7 @@ automation:
       - choose:
           - conditions:
               - condition: trigger
-                id: "midnight_reset"
+                id: "cycle_reset"
             sequence:
               - service: input_boolean.turn_off
                 target:
