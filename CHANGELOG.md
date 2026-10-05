@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.1-pre.1] - 2026-10-05
+
 ### Changed
 - Converted all price values in dashboards and configuration from dollars to cents for improved readability
 - Adjusted solar pre-export timing to allow pre-exporting prior to midnight by referencing tomorrow's Solcast forecast after 16:00
