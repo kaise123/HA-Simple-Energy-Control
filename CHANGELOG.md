@@ -12,7 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 - Fixed predictive export hold falsely triggering by reverting the max export forecast horizon from 24h back to 12h
-- Fixed false positive "Spike Forecasted" holds by gating `tier_export_forecasted` behind the Predictive Hold toggle and lowering its priority
+- Removed fundamentally flawed `tier_export_forecasted` logic which was falsely triggering "Spike Forecasted" holds when standard export tiers were forecasted
 - Fixed rapid toggling of solar pre-export by adding price hysteresis to the latching logic
 - Fixed negative price curtailment failing to trigger by replacing missing battery full sensor with direct Modbus control of `input_number.alphaess_helper_max_feed_to_grid`
 
