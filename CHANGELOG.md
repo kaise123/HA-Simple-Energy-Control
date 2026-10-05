@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+- Converted all price values in dashboards and configuration from dollars to cents for improved readability
+- Adjusted solar pre-export timing to allow pre-exporting prior to midnight by referencing tomorrow's Solcast forecast after 16:00
+
+### Fixed
+- Fixed predictive export hold falsely triggering by reverting the max export forecast horizon from 24h back to 12h
+- Fixed false positive "Spike Forecasted" holds by gating `tier_export_forecasted` behind the Predictive Hold toggle and lowering its priority
+- Fixed rapid toggling of solar pre-export by adding price hysteresis to the latching logic
+- Fixed negative price curtailment failing to trigger by replacing missing battery full sensor with direct Modbus control of `input_number.alphaess_helper_max_feed_to_grid`
+
 ## [1.3.0] - 2026-09-09
 
 ### Added
