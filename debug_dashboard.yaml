@@ -56,8 +56,8 @@ views:
               Evaluates the automation's decision tree in strict priority order using live sensor values and explains why the current action was selected.
               
               {% set soc = states('sensor.alphaess_soc_battery') | float(0) %}
-              {% set imp_price = states('sensor.amber_express_home_general_price') | float(0) %}
-              {% set exp_price = states('sensor.amber_express_home_feed_in_price') | float(0) %}
+              {% set imp_price = (states('sensor.amber_express_home_general_price') | float(0)) * 100 %}
+              {% set exp_price = (states('sensor.amber_express_home_feed_in_price') | float(0)) * 100 %}
               {% set current_status = states('input_text.amber_active_tier_status') %}
               {% set hysteresis = states('input_number.amber_price_hysteresis') | float(0) %}
               {% set soc_hysteresis = states('input_number.amber_soc_hysteresis') | float(0) %}
@@ -119,25 +119,25 @@ views:
               {% if not enabled %}
               🔴 **AUTOMATION DISABLED:** Master switch is OFF. The system is in manual self-consumption mode.
               {% elif curtailment_active %}
-              🛑 **CURTAILMENT ACTIVE:** Live feed-in price is **{{ exp_price }}c/kWh**, which is ≤ your threshold of **{{ curtailment_thresh }}c/kWh**. All grid exports are blocked to protect against paying export tariffs. Inverter commanded to Mode 5.
+              🛑 **CURTAILMENT ACTIVE:** Live feed-in price is **{{ exp_price | round(1) }}c/kWh**, which is is at or below your threshold of **{{ curtailment_thresh | round(1) }}c/kWh**. All grid exports are blocked to protect against paying export tariffs. Inverter commanded to Mode 5.
               {% elif pred_exp_active %}
-              🛑 **PREDICTIVE EXPORT HOLD ACTIVE:** Amber forecasts a massive future spike of **{{ max_exp_12h }}c/kWh** within 1–12h (threshold: **{{ pred_exp_thresh }}c/kWh**). Current exports are paused to preserve battery capacity until the spike occurs or live price crosses **{{ pred_exp_override }}c/kWh**.
+              🛑 **PREDICTIVE EXPORT HOLD ACTIVE:** Amber forecasts a massive future spike of **{{ max_exp_12h | round(1) }}c/kWh** within 1–12h (threshold: **{{ pred_exp_thresh | round(1) }}c/kWh**). Current exports are paused to preserve battery capacity until the spike occurs or live price crosses **{{ pred_exp_override | round(1) }}c/kWh**.
               {% elif pred_imp_active %}
-              🛑 **PREDICTIVE IMPORT HOLD ACTIVE:** Amber forecasts a future price drop down to **{{ min_imp_12h }}c/kWh** within 1–12h (threshold: **{{ pred_imp_thresh }}c/kWh**). Grid charging is paused to wait for the cheaper tariff window.
+              🛑 **PREDICTIVE IMPORT HOLD ACTIVE:** Amber forecasts a future price drop down to **{{ min_imp_12h | round(1) }}c/kWh** within 1–12h (threshold: **{{ pred_imp_thresh | round(1) }}c/kWh**). Grid charging is paused to wait for the cheaper tariff window.
               {% elif soak_exp_active %}
-              ☀️ **SOLAR SOAK PRE-EXPORT ACTIVE:** Solcast forecasts excess midday solar yield and Amber forecasts negative feed-in prices. Pre-discharging battery from **{{ soc }}%** down to **{{ soak_target_soc | int(20) }}% Target SoC** (min floor: **{{ soak_min_soc }}%**) at **{{ exp_price }}c/kWh** to create capacity for midday solar. Inverter commanded to Mode 4.
+              ☀️ **SOLAR SOAK PRE-EXPORT ACTIVE:** Solcast forecasts excess midday solar yield and Amber forecasts negative feed-in prices. Pre-discharging battery from **{{ soc }}%** down to **{{ soak_target_soc | int(20) }}% Target SoC** (min floor: **{{ soak_min_soc }}%**) at **{{ exp_price | round(1) }}c/kWh** to create capacity for midday solar. Inverter commanded to Mode 4.
               {% elif exp_guard_active %}
               🛑 **EXPORT SOC GUARD BLOCKED:** Export conditions met, but current battery SOC (**{{ soc }}%**) is at or below the Emergency Export Guard (**{{ states('input_number.amber_export_min_soc_guard') }}%**). Inverter protected in Mode 5.
               {% elif t1_exp %}
-              📤 **EXPORTING (TIER 1):** Feed-in price (**{{ exp_price }}c/kWh**) ≥ **{{ t1_exp_price }}c/kWh** and Battery SOC (**{{ soc }}%**) ≥ **{{ t1_exp_soc }}%**. Inverter commanded to Mode 4 (Maximise Output).
+              📤 **EXPORTING (TIER 1):** Feed-in price (**{{ exp_price | round(1) }}c/kWh**) is at or above **{{ t1_exp_price | round(1) }}c/kWh** and Battery SOC (**{{ soc }}%**) is at or above **{{ t1_exp_soc }}%**. Inverter commanded to Mode 4 (Maximise Output).
               {% elif t2_exp %}
-              📤 **EXPORTING (TIER 2):** Feed-in price (**{{ exp_price }}c/kWh**) ≥ **{{ t2_exp_price }}c/kWh** and Battery SOC (**{{ soc }}%**) ≥ **{{ t2_exp_soc }}%**. Inverter commanded to Mode 4 (Maximise Output).
+              📤 **EXPORTING (TIER 2):** Feed-in price (**{{ exp_price | round(1) }}c/kWh**) is at or above **{{ t2_exp_price | round(1) }}c/kWh** and Battery SOC (**{{ soc }}%**) is at or above **{{ t2_exp_soc }}%**. Inverter commanded to Mode 4 (Maximise Output).
               {% elif t3_exp %}
-              📤 **EXPORTING (TIER 3):** Feed-in price (**{{ exp_price }}c/kWh**) ≥ **{{ t3_exp_price }}c/kWh** and Battery SOC (**{{ soc }}%**) ≥ **{{ t3_exp_soc }}%**. Inverter commanded to Mode 4 (Maximise Output).
+              📤 **EXPORTING (TIER 3):** Feed-in price (**{{ exp_price | round(1) }}c/kWh**) is at or above **{{ t3_exp_price | round(1) }}c/kWh** and Battery SOC (**{{ soc }}%**) is at or above **{{ t3_exp_soc }}%**. Inverter commanded to Mode 4 (Maximise Output).
               {% elif t1_imp %}
-              📥 **IMPORTING (TIER 1):** General import price (**{{ imp_price }}c/kWh**) ≤ **{{ t1_imp_price }}c/kWh** and Battery SOC (**{{ soc }}%**) ≤ **{{ t1_imp_soc }}%**. Inverter commanded to Mode 6 (Optimise Consumption).
+              📥 **IMPORTING (TIER 1):** General import price (**{{ imp_price | round(1) }}c/kWh**) is at or below **{{ t1_imp_price | round(1) }}c/kWh** and Battery SOC (**{{ soc }}%**) is at or below **{{ t1_imp_soc }}%**. Inverter commanded to Mode 6 (Optimise Consumption).
               {% elif t2_imp %}
-              📥 **IMPORTING (TIER 2):** General import price (**{{ imp_price }}c/kWh**) ≤ **{{ t2_imp_price }}c/kWh** and Battery SOC (**{{ soc }}%**) ≤ **{{ t2_imp_soc }}%**. Inverter commanded to Mode 6 (Optimise Consumption).
+              📥 **IMPORTING (TIER 2):** General import price (**{{ imp_price | round(1) }}c/kWh**) is at or below **{{ t2_imp_price | round(1) }}c/kWh** and Battery SOC (**{{ soc }}%**) is at or below **{{ t2_imp_soc }}%**. Inverter commanded to Mode 6 (Optimise Consumption).
               {% else %}
               🟢 **IDLE (NORMAL MODE):** No export, import, or soak thresholds are currently matched. The inverter operates in standard self-consumption (Mode 5).
               {% endif %}
@@ -151,34 +151,34 @@ views:
                 * *Values:* Switch: {{ 'Enabled' if enabled else 'Disabled' }}
               * **2. Negative Price Curtailment**
                 * *Status:* {% if curtailment_active %}🛑 **TRIGGERED**{% else %}⚪ False{% endif %}
-                * *Values:* Feed-in: {{ exp_price }} ≤ Curtail Threshold {{ curtailment_thresh }}
+                * *Values:* Feed-in: {{ exp_price | round(1) }}c/kWh is at or below Curtail Threshold {{ curtailment_thresh | round(1) }}c/kWh
               * **3. Solar Soak Pre-Export**
                 * *Status:* {% if soak_exp_active %}☀️ **SOAKING**{% else %}⚪ False{% endif %}
-                * *Values:* Window: {{ 'ACTIVE' if neg_forecast_on else 'WAITING' }}, Done Today: {{ 'YES' if completed_today else 'NO' }}, Price: {{ exp_price }}c/kWh ≥ {{ soak_min_price }}c/kWh, SOC: {{ soc }}% > Target {{ soak_target_soc | int(20) }}%
+                * *Values:* Window: {{ 'ACTIVE' if neg_forecast_on else 'WAITING' }}, Done Today: {{ 'YES' if completed_today else 'NO' }}, Price: {{ exp_price | round(1) }}c/kWh is at or above {{ soak_min_price | round(1) }}c/kWh, SOC: {{ soc }}% is above Target {{ soak_target_soc | int(20) }}%
               * **4. Predictive Export Hold**
                 * *Status:* {% if pred_exp_active %}🛑 **HOLDING**{% else %}⚪ False{% endif %}
-                * *Values:* 12h Max: {{ max_exp_12h }}c/kWh ≥ {{ pred_exp_thresh }}c/kWh (Release: {{ pred_exp_override }}c/kWh)
+                * *Values:* 12h Max: {{ max_exp_12h | round(1) }}c/kWh is at or above {{ pred_exp_thresh | round(1) }}c/kWh (Release: {{ pred_exp_override | round(1) }}c/kWh)
               * **5. Predictive Import Hold**
                 * *Status:* {% if pred_imp_active %}🛑 **HOLDING**{% else %}⚪ False{% endif %}
-                * *Values:* 12h Min: {{ min_imp_12h }}c/kWh ≤ {{ pred_imp_thresh }}c/kWh (Release: {{ pred_imp_override }}c/kWh)
+                * *Values:* 12h Min: {{ min_imp_12h | round(1) }}c/kWh is at or below {{ pred_imp_thresh | round(1) }}c/kWh (Release: {{ pred_imp_override | round(1) }}c/kWh)
               * **6. Export Minimum SOC Guard**
                 * *Status:* {% if exp_guard_active %}🛑 **GUARD ACTIVE**{% else %}⚪ False{% endif %}
-                * *Values:* Tier matched but SOC {{ soc }}% ≤ Guard {{ states('input_number.amber_export_min_soc_guard') }}%
+                * *Values:* Tier matched but SOC {{ soc }}% is at or below Guard {{ states('input_number.amber_export_min_soc_guard') }}%
               * **7. Export Tier 1**
                 * *Status:* {% if t1_exp %}📤 **MATCHED**{% else %}⚪ False{% endif %}
-                * *Values:* Req: SOC ≥ {{ t1_exp_soc }}%, Price ≥ {{ t1_exp_price }}
+                * *Values:* Req: SOC is at or above {{ t1_exp_soc }}%, Price is at or above {{ t1_exp_price | round(1) }}c/kWh
               * **8. Export Tier 2**
                 * *Status:* {% if t2_exp %}📤 **MATCHED**{% else %}⚪ False{% endif %}
-                * *Values:* Req: SOC ≥ {{ t2_exp_soc }}%, Price ≥ {{ t2_exp_price }}
+                * *Values:* Req: SOC is at or above {{ t2_exp_soc }}%, Price is at or above {{ t2_exp_price | round(1) }}c/kWh
               * **9. Export Tier 3**
                 * *Status:* {% if t3_exp %}📤 **MATCHED**{% else %}⚪ False{% endif %}
-                * *Values:* Req: SOC ≥ {{ t3_exp_soc }}%, Price ≥ {{ t3_exp_price }}
+                * *Values:* Req: SOC is at or above {{ t3_exp_soc }}%, Price is at or above {{ t3_exp_price | round(1) }}c/kWh
               * **10. Import Tier 1**
                 * *Status:* {% if t1_imp %}📥 **MATCHED**{% else %}⚪ False{% endif %}
-                * *Values:* Req: SOC ≤ {{ t1_imp_soc }}%, Price ≤ {{ t1_imp_price }}
+                * *Values:* Req: SOC is at or below {{ t1_imp_soc }}%, Price is at or below {{ t1_imp_price | round(1) }}c/kWh
               * **11. Import Tier 2**
                 * *Status:* {% if t2_imp %}📥 **MATCHED**{% else %}⚪ False{% endif %}
-                * *Values:* Req: SOC ≤ {{ t2_imp_soc }}%, Price ≤ {{ t2_imp_price }}
+                * *Values:* Req: SOC is at or below {{ t2_imp_soc }}%, Price is at or below {{ t2_imp_price | round(1) }}c/kWh
 
       # --- SOLAR SOAK MATHEMATICAL INSPECTOR ---
       - type: vertical-stack
@@ -218,7 +218,7 @@ views:
               * **Current Battery SOC:** `{{ current_soc }}%`
               * **Target Soak SOC:** `{{ final_target | int(20) }}%`
               * **Pre-Discharge Deficit:** `{{ (current_soc - final_target) | round(1) }}%` (`{{ kwh_to_discharge | round(2) }} kWh` remaining to pre-export)
-              * **Pre-Export Required:** {% if current_soc > final_target and current_soc > min_soak_soc %}⚡ **YES (Current SOC > Target SOC & Above Floor)**{% else %}🟢 **NO (Already at or below Target SOC)**{% endif %}
+              * **Pre-Export Required:** {% if current_soc > final_target and current_soc > min_soak_soc %}⚡ **YES (Current SOC is above Target SOC & Above Floor)**{% else %}🟢 **NO (Already at or below Target SOC)**{% endif %}
 
       # --- AUTOMATION EVENT HISTORY & LOGBOOK ---
       - type: vertical-stack
