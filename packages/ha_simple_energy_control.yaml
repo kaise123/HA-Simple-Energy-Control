@@ -795,6 +795,7 @@ automation:
           # Active when curtailment toggle is ON, battery is full, and live feed-in price is at or below threshold (with hysteresis)
           curtailment_active: >
             {{ is_state('input_boolean.amber_curtailment_enabled', 'on')
+               and is_state('sensor.alphaess_battery_full', 'true')
                and (
                  (currently_curtailed
                   and export_price <= (states('input_number.amber_curtailment_price_threshold')|float(0.00) + hysteresis))
