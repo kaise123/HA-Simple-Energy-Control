@@ -820,7 +820,7 @@ automation:
           soak_target_soc: "{{ states('sensor.amber_solar_soak_target_soc') | float(20) }}"
           soak_min_soc: "{{ states('input_number.amber_soak_min_soc') | float(20) }}"
           soak_exp_active: >
-            {{ enabled and not curtailment_active and not pred_exp_active and not tier_export_forecasted
+            {{ enabled and not curtailment_active and not pred_exp_active
                and is_state('input_boolean.amber_solar_soak_enabled', 'on')
                and is_state('sensor.amber_negative_export_forecast_12h', 'on')
                and is_state('input_boolean.amber_solar_soak_completed_today', 'off')
