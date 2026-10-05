@@ -815,15 +815,6 @@ automation:
                and states('sensor.amber_min_import_forecast_12h')|float(0) <= states('input_number.amber_import_forecast_threshold')|float(-99)
                and import_price > states('input_number.amber_import_absolute_override')|float(-99) }}
 
-          # Check if an active export tier price threshold is forecast later today (protect capacity for higher revenue)
-          tier_export_forecasted: >
-            {% set active_tiers = [
-              states('input_number.amber_export_price_1')|float(9999) if is_state('input_boolean.amber_export_tier_1_enabled', 'on') else 9999,
-              states('input_number.amber_export_price_2')|float(9999) if is_state('input_boolean.amber_export_tier_2_enabled', 'on') else 9999,
-              states('input_number.amber_export_price_3')|float(9999) if is_state('input_boolean.amber_export_tier_3_enabled', 'on') else 9999
-            ] %}
-            {% set min_tier = active_tiers | min %}
-            {{ is_state('input_boolean.amber_predictive_export_hold', 'on') and min_tier < 9990 and states('sensor.amber_max_export_forecast_12h')|float(0) >= min_tier }}
 
           # 5. Solar Soak Pre-Export Logic
           soak_target_soc: "{{ states('sensor.amber_solar_soak_target_soc') | float(20) }}"
@@ -916,7 +907,6 @@ automation:
             {%- elif curtailment_active -%} curtailed
             {%- elif soak_exp_active -%} solar_soak
             {%- elif pred_exp_active -%} holding_spike
-            {%- elif tier_export_forecasted and not (t1_exp or t2_exp or t3_exp) -%} holding_tier
             {%- elif pred_imp_active -%} holding_import
             {%- elif (t1_exp or t2_exp or t3_exp) and soc <= states('input_number.amber_export_min_soc_guard') | float(10) -%} holding_soc_guard
             {%- elif t1_exp -%} export_1
@@ -933,7 +923,6 @@ automation:
             {%- if active_action == 'disabled' -%} 🔴 Automation Disabled
             {%- elif active_action == 'curtailed' -%} 🛑 Solar Curtailed
             {%- elif active_action == 'holding_spike' -%} 🛑 Holding Exports (Spike Forecasted!)
-            {%- elif active_action == 'holding_tier' -%} 🛑 Holding Exports (Waiting for Tier)
             {%- elif active_action == 'holding_import' -%} 🛑 Holding Imports (Drop Forecasted!)
             {%- elif active_action == 'solar_soak' -%} ☀️ Solar Soak Pre-Export Active
             {%- elif active_action == 'holding_soc_guard' -%} 🛑 Export Blocked (SOC Guard Active)
