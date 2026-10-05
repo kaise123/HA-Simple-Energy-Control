@@ -151,35 +151,34 @@ views:
                 * *Values:* Switch: {{ 'Enabled' if enabled else 'Disabled' }}
               * **2. Negative Price Curtailment**
                 * *Status:* {% if curtailment_active %}🛑 **TRIGGERED**{% else %}⚪ False{% endif %}
-                * *Values:* Feed-in: {{ exp_price | round(1) }}c/kWh is at or below Curtail Threshold {{ curtailment_thresh | round(1) }}c/kWh
+                * *Values:* Live Feed-in: {{ exp_price | round(1) }}c/kWh (Curtails if at or below {{ curtailment_thresh | round(1) }}c/kWh)
               * **3. Solar Soak Pre-Export**
                 * *Status:* {% if soak_exp_active %}☀️ **SOAKING**{% else %}⚪ False{% endif %}
-                * *Values:* Window: {{ 'ACTIVE' if neg_forecast_on else 'WAITING' }}, Done Today: {{ 'YES' if completed_today else 'NO' }}, Price: {{ exp_price | round(1) }}c/kWh is at or above {{ soak_min_price | round(1) }}c/kWh, SOC: {{ soc }}% is above Target {{ soak_target_soc | int(20) }}%
+                * *Values:* Window: {{ 'ACTIVE' if neg_forecast_on else 'WAITING' }}, Done Today: {{ 'YES' if completed_today else 'NO' }}, Live Price: {{ exp_price | round(1) }}c/kWh (Req: at or above {{ soak_min_price | round(1) }}c/kWh), Live SOC: {{ soc }}% (Req: above {{ soak_target_soc | int(20) }}%)
               * **4. Predictive Export Hold**
                 * *Status:* {% if pred_exp_active %}🛑 **HOLDING**{% else %}⚪ False{% endif %}
-                * *Values:* 12h Max: {{ max_exp_12h | round(1) }}c/kWh is at or above {{ pred_exp_thresh | round(1) }}c/kWh (Release: {{ pred_exp_override | round(1) }}c/kWh)
+                * *Values:* 12h Forecast Max: {{ max_exp_12h | round(1) }}c/kWh (Holds if at or above {{ pred_exp_thresh | round(1) }}c/kWh, Override at {{ pred_exp_override | round(1) }}c/kWh)
               * **5. Predictive Import Hold**
                 * *Status:* {% if pred_imp_active %}🛑 **HOLDING**{% else %}⚪ False{% endif %}
-                * *Values:* 12h Min: {{ min_imp_12h | round(1) }}c/kWh is at or below {{ pred_imp_thresh | round(1) }}c/kWh (Release: {{ pred_imp_override | round(1) }}c/kWh)
+                * *Values:* 12h Forecast Min: {{ min_imp_12h | round(1) }}c/kWh (Holds if at or below {{ pred_imp_thresh | round(1) }}c/kWh, Override at {{ pred_imp_override | round(1) }}c/kWh)
               * **6. Export Minimum SOC Guard**
                 * *Status:* {% if exp_guard_active %}🛑 **GUARD ACTIVE**{% else %}⚪ False{% endif %}
-                * *Values:* Tier matched but SOC {{ soc }}% is at or below Guard {{ states('input_number.amber_export_min_soc_guard') }}%
+                * *Values:* Live SOC: {{ soc }}% (Blocks if at or below {{ states('input_number.amber_export_min_soc_guard') }}%)
               * **7. Export Tier 1**
                 * *Status:* {% if t1_exp %}📤 **MATCHED**{% else %}⚪ False{% endif %}
-                * *Values:* Req: SOC is at or above {{ t1_exp_soc }}%, Price is at or above {{ t1_exp_price | round(1) }}c/kWh
+                * *Values:* Live SOC: {{ soc }}% (Req: at or above {{ t1_exp_soc }}%), Live Price: {{ exp_price | round(1) }}c/kWh (Req: at or above {{ t1_exp_price | round(1) }}c/kWh)
               * **8. Export Tier 2**
                 * *Status:* {% if t2_exp %}📤 **MATCHED**{% else %}⚪ False{% endif %}
-                * *Values:* Req: SOC is at or above {{ t2_exp_soc }}%, Price is at or above {{ t2_exp_price | round(1) }}c/kWh
+                * *Values:* Live SOC: {{ soc }}% (Req: at or above {{ t2_exp_soc }}%), Live Price: {{ exp_price | round(1) }}c/kWh (Req: at or above {{ t2_exp_price | round(1) }}c/kWh)
               * **9. Export Tier 3**
                 * *Status:* {% if t3_exp %}📤 **MATCHED**{% else %}⚪ False{% endif %}
-                * *Values:* Req: SOC is at or above {{ t3_exp_soc }}%, Price is at or above {{ t3_exp_price | round(1) }}c/kWh
+                * *Values:* Live SOC: {{ soc }}% (Req: at or above {{ t3_exp_soc }}%), Live Price: {{ exp_price | round(1) }}c/kWh (Req: at or above {{ t3_exp_price | round(1) }}c/kWh)
               * **10. Import Tier 1**
                 * *Status:* {% if t1_imp %}📥 **MATCHED**{% else %}⚪ False{% endif %}
-                * *Values:* Req: SOC is at or below {{ t1_imp_soc }}%, Price is at or below {{ t1_imp_price | round(1) }}c/kWh
+                * *Values:* Live SOC: {{ soc }}% (Req: at or below {{ t1_imp_soc }}%), Live Price: {{ imp_price | round(1) }}c/kWh (Req: at or below {{ t1_imp_price | round(1) }}c/kWh)
               * **11. Import Tier 2**
                 * *Status:* {% if t2_imp %}📥 **MATCHED**{% else %}⚪ False{% endif %}
-                * *Values:* Req: SOC is at or below {{ t2_imp_soc }}%, Price is at or below {{ t2_imp_price | round(1) }}c/kWh
-
+                * *Values:* Live SOC: {{ soc }}% (Req: at or below {{ t2_imp_soc }}%), Live Price: {{ imp_price | round(1) }}c/kWh (Req: at or below {{ t2_imp_price | round(1) }}c/kWh)
       # --- SOLAR SOAK MATHEMATICAL INSPECTOR ---
       - type: vertical-stack
         cards:
