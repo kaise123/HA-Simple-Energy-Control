@@ -124,11 +124,11 @@ views:
               
               **Your Current Active Rules:**
               
-              {% if is_state('input_boolean.amber_export_tier_1_enabled', 'on') %}✅{% else %}❌{% endif %} **Tier 1:** When battery is over **{{ states('input_number.amber_export_soc_1') }}%**, export if feed-in is above **{{ states('input_number.amber_export_price_1') }}**.
+              {% if is_state('input_boolean.amber_export_tier_1_enabled', 'on') %}✅{% else %}❌{% endif %} **Tier 1:** When battery is over **{{ states('input_number.amber_export_soc_1') }}%**, export if feed-in is above **{{ states('input_number.amber_export_price_1') }}c/kWh**.
               
-              {% if is_state('input_boolean.amber_export_tier_2_enabled', 'on') %}✅{% else %}❌{% endif %} **Tier 2:** When battery is over **{{ states('input_number.amber_export_soc_2') }}%**, export if feed-in is above **{{ states('input_number.amber_export_price_2') }}**.
+              {% if is_state('input_boolean.amber_export_tier_2_enabled', 'on') %}✅{% else %}❌{% endif %} **Tier 2:** When battery is over **{{ states('input_number.amber_export_soc_2') }}%**, export if feed-in is above **{{ states('input_number.amber_export_price_2') }}c/kWh**.
               
-              {% if is_state('input_boolean.amber_export_tier_3_enabled', 'on') %}✅{% else %}❌{% endif %} **Tier 3:** When battery is over **{{ states('input_number.amber_export_soc_3') }}%**, export if feed-in is above **{{ states('input_number.amber_export_price_3') }}**.
+              {% if is_state('input_boolean.amber_export_tier_3_enabled', 'on') %}✅{% else %}❌{% endif %} **Tier 3:** When battery is over **{{ states('input_number.amber_export_soc_3') }}%**, export if feed-in is above **{{ states('input_number.amber_export_price_3') }}c/kWh**.
           - type: entities
             entities:
               - type: section
@@ -164,9 +164,9 @@ views:
               
               **Your Current Active Rules:**
               
-              {% if is_state('input_boolean.amber_import_tier_1_enabled', 'on') %}✅{% else %}❌{% endif %} **Tier 1:** When battery is below **{{ states('input_number.amber_import_soc_1') }}%**, force-charge if import price is below **{{ states('input_number.amber_import_price_1') }}**.
+              {% if is_state('input_boolean.amber_import_tier_1_enabled', 'on') %}✅{% else %}❌{% endif %} **Tier 1:** When battery is below **{{ states('input_number.amber_import_soc_1') }}%**, force-charge if import price is below **{{ states('input_number.amber_import_price_1') }}c/kWh**.
               
-              {% if is_state('input_boolean.amber_import_tier_2_enabled', 'on') %}✅{% else %}❌{% endif %} **Tier 2:** When battery is below **{{ states('input_number.amber_import_soc_2') }}%**, force-charge if import price is below **{{ states('input_number.amber_import_price_2') }}**.
+              {% if is_state('input_boolean.amber_import_tier_2_enabled', 'on') %}✅{% else %}❌{% endif %} **Tier 2:** When battery is below **{{ states('input_number.amber_import_soc_2') }}%**, force-charge if import price is below **{{ states('input_number.amber_import_price_2') }}c/kWh**.
           - type: entities
             entities:
               - type: section
@@ -195,9 +195,9 @@ views:
               
               **Your Current Active Rules:**
               
-              {% if is_state('input_boolean.amber_predictive_export_hold', 'on') %}✅{% else %}❌{% endif %} **Export Hold:** Pause exports if 12h forecast exceeds **{{ states('input_number.amber_export_forecast_threshold') }}** (released if live price > **{{ states('input_number.amber_export_absolute_override') }}**).
+              {% if is_state('input_boolean.amber_predictive_export_hold', 'on') %}✅{% else %}❌{% endif %} **Export Hold:** Pause exports if 12h forecast exceeds **{{ states('input_number.amber_export_forecast_threshold') }}c/kWh** (released if live price is above **{{ states('input_number.amber_export_absolute_override') }}c/kWh**).
               
-              {% if is_state('input_boolean.amber_predictive_import_hold', 'on') %}✅{% else %}❌{% endif %} **Import Hold:** Pause charging if 12h forecast drops below **{{ states('input_number.amber_import_forecast_threshold') }}** (released if live price < **{{ states('input_number.amber_import_absolute_override') }}**).
+              {% if is_state('input_boolean.amber_predictive_import_hold', 'on') %}✅{% else %}❌{% endif %} **Import Hold:** Pause charging if 12h forecast drops below **{{ states('input_number.amber_import_forecast_threshold') }}c/kWh** (released if live price is below **{{ states('input_number.amber_import_absolute_override') }}c/kWh**).
           - type: entities
             entities:
               - type: section
