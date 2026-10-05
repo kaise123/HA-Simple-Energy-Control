@@ -81,9 +81,9 @@ views:
               
               **Your Current Active Rules:**
               
-              {% if is_state('input_boolean.amber_solar_soak_enabled', 'on') %}✅{% else %}❌{% endif %} **Solar Soak:** Pre-export down to **{{ states('sensor.amber_solar_soak_target_soc') | int(20) }}%** (min floor **{{ states('input_number.amber_soak_min_soc') }}%**) if feed-in is above **{{ states('input_number.amber_soak_min_pre_export_price') }}**.
+              {% if is_state('input_boolean.amber_solar_soak_enabled', 'on') %}✅{% else %}❌{% endif %} **Solar Soak:** Pre-export down to **{{ states('sensor.amber_solar_soak_target_soc') | int(20) }}%** (min floor **{{ states('input_number.amber_soak_min_soc') }}%**) if feed-in is above **{{ states('input_number.amber_soak_min_pre_export_price') }}c/kWh**.
               
-              {% if is_state('input_boolean.amber_curtailment_enabled', 'on') %}✅{% else %}❌{% endif %} **Curtailment:** Halt exports when battery is full if feed-in drops below **{{ states('input_number.amber_curtailment_price_threshold') }}**.
+              {% if is_state('input_boolean.amber_curtailment_enabled', 'on') %}✅{% else %}❌{% endif %} **Curtailment:** Halt exports when battery is full if feed-in drops below **{{ states('input_number.amber_curtailment_price_threshold') }}c/kWh**.
           - type: entities
             entities:
               - type: section
