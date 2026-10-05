@@ -58,6 +58,8 @@ views:
             curve: smooth
             color: '#e74c3c'
             extend_to: now
+            transform: "return x * 100;"
+            unit: "c/kWh"
           - entity: sensor.amber_express_home_feed_in_price
             name: Feed-in Price
             type: area
@@ -65,6 +67,8 @@ views:
             color: '#2ecc71'
             opacity: 0.3
             extend_to: now
+            transform: "return x * 100;"
+            unit: "c/kWh"
 
       # --- SOLAR SOAK & NEGATIVE PRICE CURTAILMENT ---
       - type: vertical-stack
@@ -77,9 +81,9 @@ views:
               
               **Your Current Active Rules:**
               
-              {% if is_state('input_boolean.amber_solar_soak_enabled', 'on') %}✅{% else %}❌{% endif %} **Solar Soak:** Pre-export down to **{{ states('sensor.amber_solar_soak_target_soc') | int(20) }}%** (min floor **{{ states('input_number.amber_soak_min_soc') }}%**) if feed-in is above **${{ states('input_number.amber_soak_min_pre_export_price') }}**.
+              {% if is_state('input_boolean.amber_solar_soak_enabled', 'on') %}✅{% else %}❌{% endif %} **Solar Soak:** Pre-export down to **{{ states('sensor.amber_solar_soak_target_soc') | int(20) }}%** (min floor **{{ states('input_number.amber_soak_min_soc') }}%**) if feed-in is above **{{ states('input_number.amber_soak_min_pre_export_price') }}**.
               
-              {% if is_state('input_boolean.amber_curtailment_enabled', 'on') %}✅{% else %}❌{% endif %} **Curtailment:** Halt exports when battery is full if feed-in drops below **${{ states('input_number.amber_curtailment_price_threshold') }}**.
+              {% if is_state('input_boolean.amber_curtailment_enabled', 'on') %}✅{% else %}❌{% endif %} **Curtailment:** Halt exports when battery is full if feed-in drops below **{{ states('input_number.amber_curtailment_price_threshold') }}**.
           - type: entities
             entities:
               - type: section
@@ -99,7 +103,7 @@ views:
               - entity: input_number.amber_inverter_power
                 name: "Inverter Power Limit (kW):"
               - entity: input_number.amber_soak_min_pre_export_price
-                name: "Pre-export if price ($) is above:"
+                name: "Pre-export if price (c) is above:"
               - entity: input_number.amber_soak_min_soc
                 name: "Minimum SOC floor to protect (%):"
               - type: section
@@ -107,7 +111,7 @@ views:
               - entity: input_boolean.amber_curtailment_enabled
                 name: Enable Negative Curtailment
               - entity: input_number.amber_curtailment_price_threshold
-                name: "Curtail if price ($) is below:"
+                name: "Curtail if price (c) is below:"
 
       # --- EXPORT RULES (DYNAMIC) ---
       - type: vertical-stack
@@ -120,11 +124,11 @@ views:
               
               **Your Current Active Rules:**
               
-              {% if is_state('input_boolean.amber_export_tier_1_enabled', 'on') %}✅{% else %}❌{% endif %} **Tier 1:** When battery is over **{{ states('input_number.amber_export_soc_1') }}%**, export if feed-in is above **${{ states('input_number.amber_export_price_1') }}**.
+              {% if is_state('input_boolean.amber_export_tier_1_enabled', 'on') %}✅{% else %}❌{% endif %} **Tier 1:** When battery is over **{{ states('input_number.amber_export_soc_1') }}%**, export if feed-in is above **{{ states('input_number.amber_export_price_1') }}**.
               
-              {% if is_state('input_boolean.amber_export_tier_2_enabled', 'on') %}✅{% else %}❌{% endif %} **Tier 2:** When battery is over **{{ states('input_number.amber_export_soc_2') }}%**, export if feed-in is above **${{ states('input_number.amber_export_price_2') }}**.
+              {% if is_state('input_boolean.amber_export_tier_2_enabled', 'on') %}✅{% else %}❌{% endif %} **Tier 2:** When battery is over **{{ states('input_number.amber_export_soc_2') }}%**, export if feed-in is above **{{ states('input_number.amber_export_price_2') }}**.
               
-              {% if is_state('input_boolean.amber_export_tier_3_enabled', 'on') %}✅{% else %}❌{% endif %} **Tier 3:** When battery is over **{{ states('input_number.amber_export_soc_3') }}%**, export if feed-in is above **${{ states('input_number.amber_export_price_3') }}**.
+              {% if is_state('input_boolean.amber_export_tier_3_enabled', 'on') %}✅{% else %}❌{% endif %} **Tier 3:** When battery is over **{{ states('input_number.amber_export_soc_3') }}%**, export if feed-in is above **{{ states('input_number.amber_export_price_3') }}**.
           - type: entities
             entities:
               - type: section
@@ -133,21 +137,21 @@ views:
               - entity: input_number.amber_export_soc_1
                 name: "If SOC % is greater than:"
               - entity: input_number.amber_export_price_1
-                name: "Export if price ($) is above:"
+                name: "Export if price (c) is above:"
               - type: section
                 label: Tier 2 (Mid SOC)
               - entity: input_boolean.amber_export_tier_2_enabled
               - entity: input_number.amber_export_soc_2
                 name: "If SOC % is greater than:"
               - entity: input_number.amber_export_price_2
-                name: "Export if price ($) is above:"
+                name: "Export if price (c) is above:"
               - type: section
                 label: Tier 3 (Low SOC)
               - entity: input_boolean.amber_export_tier_3_enabled
               - entity: input_number.amber_export_soc_3
                 name: "If SOC % is greater than:"
               - entity: input_number.amber_export_price_3
-                name: "Export if price ($) is above:"
+                name: "Export if price (c) is above:"
 
       # --- IMPORT RULES (DYNAMIC) ---
       - type: vertical-stack
@@ -160,9 +164,9 @@ views:
               
               **Your Current Active Rules:**
               
-              {% if is_state('input_boolean.amber_import_tier_1_enabled', 'on') %}✅{% else %}❌{% endif %} **Tier 1:** When battery is below **{{ states('input_number.amber_import_soc_1') }}%**, force-charge if import price is below **${{ states('input_number.amber_import_price_1') }}**.
+              {% if is_state('input_boolean.amber_import_tier_1_enabled', 'on') %}✅{% else %}❌{% endif %} **Tier 1:** When battery is below **{{ states('input_number.amber_import_soc_1') }}%**, force-charge if import price is below **{{ states('input_number.amber_import_price_1') }}**.
               
-              {% if is_state('input_boolean.amber_import_tier_2_enabled', 'on') %}✅{% else %}❌{% endif %} **Tier 2:** When battery is below **{{ states('input_number.amber_import_soc_2') }}%**, force-charge if import price is below **${{ states('input_number.amber_import_price_2') }}**.
+              {% if is_state('input_boolean.amber_import_tier_2_enabled', 'on') %}✅{% else %}❌{% endif %} **Tier 2:** When battery is below **{{ states('input_number.amber_import_soc_2') }}%**, force-charge if import price is below **{{ states('input_number.amber_import_price_2') }}**.
           - type: entities
             entities:
               - type: section
@@ -171,14 +175,14 @@ views:
               - entity: input_number.amber_import_soc_1
                 name: "If SOC % is less than:"
               - entity: input_number.amber_import_price_1
-                name: "Charge if price ($) is below:"
+                name: "Charge if price (c) is below:"
               - type: section
                 label: Tier 2 (Mid SOC)
               - entity: input_boolean.amber_import_tier_2_enabled
               - entity: input_number.amber_import_soc_2
                 name: "If SOC % is less than:"
               - entity: input_number.amber_import_price_2
-                name: "Charge if price ($) is below:"
+                name: "Charge if price (c) is below:"
 
       # --- PREDICTIVE LOGIC & FORECASTING ---
       - type: vertical-stack
@@ -191,9 +195,9 @@ views:
               
               **Your Current Active Rules:**
               
-              {% if is_state('input_boolean.amber_predictive_export_hold', 'on') %}✅{% else %}❌{% endif %} **Export Hold:** Pause exports if 12h forecast exceeds **${{ states('input_number.amber_export_forecast_threshold') }}** (released if live price > **${{ states('input_number.amber_export_absolute_override') }}**).
+              {% if is_state('input_boolean.amber_predictive_export_hold', 'on') %}✅{% else %}❌{% endif %} **Export Hold:** Pause exports if 12h forecast exceeds **{{ states('input_number.amber_export_forecast_threshold') }}** (released if live price > **{{ states('input_number.amber_export_absolute_override') }}**).
               
-              {% if is_state('input_boolean.amber_predictive_import_hold', 'on') %}✅{% else %}❌{% endif %} **Import Hold:** Pause charging if 12h forecast drops below **${{ states('input_number.amber_import_forecast_threshold') }}** (released if live price < **${{ states('input_number.amber_import_absolute_override') }}**).
+              {% if is_state('input_boolean.amber_predictive_import_hold', 'on') %}✅{% else %}❌{% endif %} **Import Hold:** Pause charging if 12h forecast drops below **{{ states('input_number.amber_import_forecast_threshold') }}** (released if live price < **{{ states('input_number.amber_import_absolute_override') }}**).
           - type: entities
             entities:
               - type: section
@@ -203,9 +207,9 @@ views:
               - entity: sensor.amber_max_export_forecast_12h
                 name: Highest Future Export Price (1-12h)
               - entity: input_number.amber_export_forecast_threshold
-                name: "Hold if future spike exceeds ($):"
+                name: "Hold if future spike exceeds (c):"
               - entity: input_number.amber_export_absolute_override
-                name: "Release hold if live price is above ($):"
+                name: "Release hold if live price is above (c):"
               - type: section
                 label: Predictive Import Override
               - entity: input_boolean.amber_predictive_import_hold
@@ -213,9 +217,9 @@ views:
               - entity: sensor.amber_min_import_forecast_12h
                 name: Lowest Future Import Price (1-12h)
               - entity: input_number.amber_import_forecast_threshold
-                name: "Hold if future drop is below ($):"
+                name: "Hold if future drop is below (c):"
               - entity: input_number.amber_import_absolute_override
-                name: "Release hold if live price is below ($):"
+                name: "Release hold if live price is below (c):"
 
       # --- MANUAL CONTROLS & MODBUS EXPLANATIONS ---
       - type: vertical-stack
@@ -289,8 +293,8 @@ views:
               * **Calculated Target SOC:** **{{ states('sensor.amber_solar_soak_target_soc') | int(20) }}%** (Solcast: {{ states('sensor.amber_solcast_10_forecast') | float(0) }} kWh, Load: {{ states('sensor.amber_average_daytime_house_load') | float(0) }} kWh)
               * **Usable Battery Capacity:** **{{ states('input_number.amber_battery_capacity') }} kWh** (Max Target Ceiling: {{ states('input_number.amber_soak_max_target_soc') }}%)
               * **Inverter Power Limit:** **{{ states('input_number.amber_inverter_power') }} kW**
-              * **Pre-Export Min Feed-in:** **${{ states('input_number.amber_soak_min_pre_export_price') }}/kWh** (Protected Floor: {{ states('input_number.amber_soak_min_soc') }}%)
-              * **Curtailment Floor:** **${{ states('input_number.amber_curtailment_price_threshold') }}/kWh**
+              * **Pre-Export Min Feed-in:** **{{ states('input_number.amber_soak_min_pre_export_price') }}c/kWh** (Protected Floor: {{ states('input_number.amber_soak_min_soc') }}%)
+              * **Curtailment Floor:** **{{ states('input_number.amber_curtailment_price_threshold') }}c/kWh**
           - type: entities
             entities:
               - type: section
@@ -308,11 +312,11 @@ views:
               - entity: input_number.amber_soak_min_soc
                 name: "Minimum SOC floor to protect (%):"
               - entity: input_number.amber_soak_min_pre_export_price
-                name: "Pre-export if price ($) is above:"
+                name: "Pre-export if price (c) is above:"
               - type: section
                 label: Negative Price Curtailment
               - entity: input_number.amber_curtailment_price_threshold
-                name: "Curtail if price ($) is below:"
+                name: "Curtail if price (c) is below:"
 
       # --- HYSTERESIS & SYSTEM SAFEGUARDS ---
       - type: vertical-stack
@@ -330,7 +334,7 @@ views:
 
               ---
 
-              **Price Hysteresis (${{ states('input_number.amber_price_hysteresis') }}/kWh):** Once a price tier is active, the price must fall this far *below* the trigger price before the tier deactivates.
+              **Price Hysteresis ({{ states('input_number.amber_price_hysteresis') }}c/kWh):** Once a price tier is active, the price must fall this far *below* the trigger price before the tier deactivates.
 
               **SOC Hysteresis ({{ states('input_number.amber_soc_hysteresis') }}%):** Once a SOC tier is active, the battery SOC must move this far *beyond* the SOC threshold before the tier deactivates.
 
@@ -340,7 +344,7 @@ views:
               - type: section
                 label: Price & SOC Hysteresis Buffers
               - entity: input_number.amber_price_hysteresis
-                name: "Price hysteresis buffer ($/kWh):"
+                name: "Price hysteresis buffer (c/kWh):"
               - entity: input_number.amber_soc_hysteresis
                 name: "SOC hysteresis buffer (%):"
               - type: section

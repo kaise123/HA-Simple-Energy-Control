@@ -103,19 +103,19 @@ template:
       # battery capacity for the upcoming price spike.
       - name: "Amber Max Export Forecast 12h"
         unique_id: amber_max_export_forecast_12h
-        unit_of_measurement: "$/kWh"
+        unit_of_measurement: "c/kWh"
         state_class: measurement
         icon: mdi:chart-line-variant
         state: >
           {% set fcast = state_attr('sensor.amber_express_home_feed_in_price', 'forecast') %}
           {% if fcast %}
             {% set start = now() + timedelta(hours=1) %}
-            {% set end = now() + timedelta(hours=24) %}
+            {% set end = now() + timedelta(hours=12) %}
             {% set ns = namespace(vals=[]) %}
             {% for item in fcast %}
               {% set item_dt = as_datetime(item.time) %}
               {% if item_dt is not none and item_dt > start and item_dt <= end %}
-                {% set ns.vals = ns.vals + [item.value | float(0)] %}
+                {% set ns.vals = ns.vals + [(item.value | float(0)) * 100] %}
               {% endif %}
             {% endfor %}
             {{ ns.vals | max if ns.vals else 0 }}
@@ -128,7 +128,7 @@ template:
       # the upcoming cheap period before force-charging.
       - name: "Amber Min Import Forecast 12h"
         unique_id: amber_min_import_forecast_12h
-        unit_of_measurement: "$/kWh"
+        unit_of_measurement: "c/kWh"
         state_class: measurement
         icon: mdi:chart-line-variant
         state: >
@@ -140,7 +140,7 @@ template:
             {% for item in fcast %}
               {% set item_dt = as_datetime(item.time) %}
               {% if item_dt is not none and item_dt > start and item_dt <= end %}
-                {% set ns.vals = ns.vals + [item.value | float(0)] %}
+                {% set ns.vals = ns.vals + [(item.value | float(0)) * 100] %}
               {% endif %}
             {% endfor %}
             {{ ns.vals | min if ns.vals else 0 }}
@@ -156,12 +156,20 @@ template:
         state_class: measurement
         icon: mdi:solar-power-variant
         state: >
-          {% set candidates = [
-            'sensor.solcast_pv_forecast_forecast_remaining_today',
-            'sensor.solcast_pv_forecast_forecast_today',
-            'sensor.solcast_forecast_remaining_today',
-            'sensor.solcast_forecast_today'
-          ] %}
+          {% set use_tomorrow = now().hour >= 16 %}
+          {% if use_tomorrow %}
+            {% set candidates = [
+              'sensor.solcast_pv_forecast_forecast_tomorrow',
+              'sensor.solcast_forecast_tomorrow'
+            ] %}
+          {% else %}
+            {% set candidates = [
+              'sensor.solcast_pv_forecast_forecast_remaining_today',
+              'sensor.solcast_pv_forecast_forecast_today',
+              'sensor.solcast_forecast_remaining_today',
+              'sensor.solcast_forecast_today'
+            ] %}
+          {% endif %}
           {% set ns = namespace(val=0, found=false) %}
           {% for s in candidates if not ns.found %}
             {% if states(s) not in ['unknown', 'unavailable', 'none', ''] %}
@@ -233,7 +241,7 @@ template:
               {% for item in fcast %}
                 {% set item_dt = as_datetime(item.time) %}
                 {% if item_dt is not none and item_dt > start_horizon and item_dt <= end_horizon and ns.t_neg is none %}
-                  {% if item.value | float(0) <= thresh %}
+                  {% if (item.value | float(0) * 100) <= thresh %}
                     {% set ns.t_neg = item_dt %}
                   {% endif %}
                 {% endif %}
@@ -241,8 +249,10 @@ template:
             {% endif %}
 
             {# Dynamic cutoff: use first negative price if found, else default to daytime solar ramp ~10:30 #}
-            {% set default_cutoff = today_at("10:30") if now() < today_at("10:30") else now() %}
-            {% set cutoff = ns.t_neg if ns.t_neg is not none and ns.t_neg < today_at("16:00") else default_cutoff %}
+            {% set today_1030 = today_at("10:30") %}
+            {% set default_cutoff = today_1030 if now() < today_1030 else (today_1030 + timedelta(days=1)) %}
+            {% set max_cutoff = today_at("16:00") if now() < today_at("16:00") else (today_at("16:00") + timedelta(days=1)) %}
+            {% set cutoff = ns.t_neg if ns.t_neg is not none and ns.t_neg < max_cutoff else default_cutoff %}
 
             {% if now() >= cutoff %}
               off
@@ -254,8 +264,9 @@ template:
 
               {# 3. Session latching: if already soaking, stay active until target is achieved or cutoff reached #}
               {% if currently_soaking %}
-                {% set live_price = states('sensor.amber_express_home_feed_in_price') | float(0) %}
-                {{ 'on' if live_price >= min_export_price else 'off' }}
+                {% set live_price = (states('sensor.amber_express_home_feed_in_price') | float(0)) * 100 %}
+                {% set price_hysteresis = states('input_number.amber_price_hysteresis') | float(0) %}
+                {{ 'on' if live_price >= (min_export_price - price_hysteresis) else 'off' }}
               {% elif time_until_cutoff <= hours_needed %}
                 {# Not enough time to wait, start immediately to finish before cutoff #}
                 on
@@ -269,7 +280,7 @@ template:
                     {% for w_item in fcast %}
                       {% set w_item_dt = as_datetime(w_item.time) %}
                       {% if w_item_dt is not none and w_item_dt >= w_start and w_item_dt < (w_start + timedelta(hours=hours_needed)) %}
-                        {% set w_ns.sum = w_ns.sum + (w_item.value | float(0)) %}
+                        {% set w_ns.sum = w_ns.sum + ((w_item.value | float(0)) * 100) %}
                         {% set w_ns.count = w_ns.count + 1 %}
                       {% endif %}
                     {% endfor %}
@@ -301,6 +312,8 @@ template:
         at: "00:01:00"
       - platform: time
         at: "06:00:00"
+      - platform: time
+        at: "16:00:00"
       - platform: homeassistant
         event: start
       - platform: state
@@ -358,11 +371,11 @@ input_number:
     unit_of_measurement: "%"
   amber_export_price_1:
     name: Export Tier 1 Minimum Price
-    min: -5
-    max: 20
-    step: 0.01
+    min: -500
+    max: 2000
+    step: 1
     mode: box
-    unit_of_measurement: "$/kWh"
+    unit_of_measurement: "c/kWh"
 
   # Tier 2: mid SOC requirement, mid price threshold
   amber_export_soc_2:
@@ -374,11 +387,11 @@ input_number:
     unit_of_measurement: "%"
   amber_export_price_2:
     name: Export Tier 2 Minimum Price
-    min: -5
-    max: 20
-    step: 0.01
+    min: -500
+    max: 2000
+    step: 1
     mode: box
-    unit_of_measurement: "$/kWh"
+    unit_of_measurement: "c/kWh"
 
   # Tier 3: lowest SOC requirement, lowest price threshold
   amber_export_soc_3:
@@ -390,11 +403,11 @@ input_number:
     unit_of_measurement: "%"
   amber_export_price_3:
     name: Export Tier 3 Minimum Price
-    min: -5
-    max: 20
-    step: 0.01
+    min: -500
+    max: 2000
+    step: 1
     mode: box
-    unit_of_measurement: "$/kWh"
+    unit_of_measurement: "c/kWh"
 
   # --- IMPORT TIERS (Charging from Grid) ---------------------------------
   # Tier 1: triggers at the lowest SOC and cheapest import price
@@ -407,11 +420,11 @@ input_number:
     unit_of_measurement: "%"
   amber_import_price_1:
     name: Import Tier 1 Maximum Price
-    min: -5
-    max: 20
-    step: 0.01
+    min: -500
+    max: 2000
+    step: 1
     mode: box
-    unit_of_measurement: "$/kWh"
+    unit_of_measurement: "c/kWh"
 
   # Tier 2: mid SOC and slightly higher price ceiling
   amber_import_soc_2:
@@ -423,11 +436,11 @@ input_number:
     unit_of_measurement: "%"
   amber_import_price_2:
     name: Import Tier 2 Maximum Price
-    min: -5
-    max: 20
-    step: 0.01
+    min: -500
+    max: 2000
+    step: 1
     mode: box
-    unit_of_measurement: "$/kWh"
+    unit_of_measurement: "c/kWh"
 
   # --- HYSTERESIS --------------------------------------------------------
   # Adds a buffer around price thresholds to prevent rapid mode toggling
@@ -435,10 +448,10 @@ input_number:
   amber_price_hysteresis:
     name: Price Hysteresis Buffer
     min: 0
-    max: 1
-    step: 0.01
+    max: 100
+    step: 1
     mode: box
-    unit_of_measurement: "$/kWh"
+    unit_of_measurement: "c/kWh"
 
   # SOC debounce: prevents rapid toggling when battery SOC sits near a tier threshold.
   # Active tiers only deactivate once SOC moves this many % beyond the threshold.
@@ -456,20 +469,20 @@ input_number:
   amber_export_forecast_threshold:
     name: Hold Exports if Future Spike Exceeds
     min: 0
-    max: 20
-    step: 0.01
+    max: 2000
+    step: 1
     mode: box
-    unit_of_measurement: "$/kWh"
+    unit_of_measurement: "c/kWh"
 
   # Import hold: blocks force-charging when a future cheap period is
   # forecast below this value, waiting for the lower cost window instead.
   amber_import_forecast_threshold:
     name: Hold Imports if Future Drop is Below
-    min: -5
-    max: 20
-    step: 0.01
+    min: -500
+    max: 2000
+    step: 1
     mode: box
-    unit_of_measurement: "$/kWh"
+    unit_of_measurement: "c/kWh"
 
   # --- ABSOLUTE OVERRIDES -----------------------------------------------
   # Releases a predictive export hold when the live price exceeds this
@@ -477,20 +490,20 @@ input_number:
   amber_export_absolute_override:
     name: Release Export Hold if Live Price >
     min: 0
-    max: 20
-    step: 0.01
+    max: 2000
+    step: 1
     mode: box
-    unit_of_measurement: "$/kWh"
+    unit_of_measurement: "c/kWh"
 
   # Releases a predictive import hold when the live price falls below this
   # floor — ensuring extreme negative prices are always captured.
   amber_import_absolute_override:
     name: Release Import Hold if Live Price <
-    min: -5
-    max: 20
-    step: 0.01
+    min: -500
+    max: 2000
+    step: 1
     mode: box
-    unit_of_measurement: "$/kWh"
+    unit_of_measurement: "c/kWh"
 
   # --- EXPORT SOC GUARD -------------------------------------------------
   # Hard floor on battery SOC during export operations. Exporting is blocked
@@ -552,20 +565,20 @@ input_number:
   # Minimum positive feed-in price required before discharging for solar soak
   amber_soak_min_pre_export_price:
     name: Min Feed-in Price to Pre-Export
-    min: 0.00
-    max: 1.00
-    step: 0.01
+    min: 0
+    max: 100
+    step: 1
     mode: box
-    unit_of_measurement: "$/kWh"
+    unit_of_measurement: "c/kWh"
 
   # Feed-in price below which solar export curtailment is triggered
   amber_curtailment_price_threshold:
     name: Curtailment Feed-in Price Threshold
-    min: -2.00
-    max: 0.50
-    step: 0.01
+    min: -200
+    max: 50
+    step: 1
     mode: box
-    unit_of_measurement: "$/kWh"
+    unit_of_measurement: "c/kWh"
 
 # ---------------------------------------------------------------------------
 # INPUT BOOLEANS — Feature toggles
@@ -634,7 +647,7 @@ automation:
     alias: "Amber Solar Soak Daily Cycle Manager"
     trigger:
       - platform: time
-        at: "00:00:00"
+        at: "16:00:00"
         id: "midnight_reset"
       - platform: time
         at: "10:30:00"
@@ -762,8 +775,8 @@ automation:
       - variables:
           # 1. Fetch current states
           soc: "{{ states('sensor.alphaess_soc_battery') | float(0) }}"
-          import_price: "{{ states('sensor.amber_express_home_general_price') | float(0) }}"
-          export_price: "{{ states('sensor.amber_express_home_feed_in_price') | float(0) }}"
+          import_price: "{{ (states('sensor.amber_express_home_general_price') | float(0)) * 100 }}"
+          export_price: "{{ (states('sensor.amber_express_home_feed_in_price') | float(0)) * 100 }}"
           hysteresis: "{{ states('input_number.amber_price_hysteresis') | float(0) }}"
           soc_hysteresis: "{{ states('input_number.amber_soc_hysteresis') | float(0) }}"
           enabled: "{{ is_state('input_boolean.amber_automation_enabled', 'on') }}"
@@ -782,7 +795,6 @@ automation:
           # Active when curtailment toggle is ON, battery is full, and live feed-in price is at or below threshold (with hysteresis)
           curtailment_active: >
             {{ is_state('input_boolean.amber_curtailment_enabled', 'on')
-               and is_state('sensor.alphaess_battery_full', 'true')
                and (
                  (currently_curtailed
                   and export_price <= (states('input_number.amber_curtailment_price_threshold')|float(0.00) + hysteresis))
@@ -805,12 +817,12 @@ automation:
           # Check if an active export tier price threshold is forecast later today (protect capacity for higher revenue)
           tier_export_forecasted: >
             {% set active_tiers = [
-              states('input_number.amber_export_price_1')|float(999) if is_state('input_boolean.amber_export_tier_1_enabled', 'on') else 999,
-              states('input_number.amber_export_price_2')|float(999) if is_state('input_boolean.amber_export_tier_2_enabled', 'on') else 999,
-              states('input_number.amber_export_price_3')|float(999) if is_state('input_boolean.amber_export_tier_3_enabled', 'on') else 999
+              states('input_number.amber_export_price_1')|float(9999) if is_state('input_boolean.amber_export_tier_1_enabled', 'on') else 9999,
+              states('input_number.amber_export_price_2')|float(9999) if is_state('input_boolean.amber_export_tier_2_enabled', 'on') else 9999,
+              states('input_number.amber_export_price_3')|float(9999) if is_state('input_boolean.amber_export_tier_3_enabled', 'on') else 9999
             ] %}
             {% set min_tier = active_tiers | min %}
-            {{ min_tier < 990 and states('sensor.amber_max_export_forecast_12h')|float(0) >= min_tier }}
+            {{ is_state('input_boolean.amber_predictive_export_hold', 'on') and min_tier < 9990 and states('sensor.amber_max_export_forecast_12h')|float(0) >= min_tier }}
 
           # 5. Solar Soak Pre-Export Logic
           soak_target_soc: "{{ states('sensor.amber_solar_soak_target_soc') | float(20) }}"
@@ -820,7 +832,7 @@ automation:
                and is_state('input_boolean.amber_solar_soak_enabled', 'on')
                and is_state('sensor.amber_negative_export_forecast_12h', 'on')
                and is_state('input_boolean.amber_solar_soak_completed_today', 'off')
-               and export_price >= states('input_number.amber_soak_min_pre_export_price')|float(0.00)
+               and export_price >= (states('input_number.amber_soak_min_pre_export_price')|float(0.00) - (hysteresis if currently_soaking else 0))
                and (
                  (currently_soaking
                   and soc > (soak_target_soc - soc_hysteresis)
@@ -901,9 +913,9 @@ automation:
           active_action: >
             {%- if not enabled -%} disabled
             {%- elif curtailment_active -%} curtailed
+            {%- elif soak_exp_active -%} solar_soak
             {%- elif pred_exp_active or (tier_export_forecasted and not (t1_exp or t2_exp or t3_exp)) -%} holding_export
             {%- elif pred_imp_active -%} holding_import
-            {%- elif soak_exp_active -%} solar_soak
             {%- elif (t1_exp or t2_exp or t3_exp) and soc <= states('input_number.amber_export_min_soc_guard') | float(10) -%} holding_soc_guard
             {%- elif t1_exp -%} export_1
             {%- elif t2_exp -%} export_2
@@ -936,6 +948,21 @@ automation:
         value_template: "{{ enabled or 'Automation Disabled' not in current_status }}"
 
       - choose:
+          # --- CURTAILMENT TRIGGER ---
+          - conditions:
+              - condition: template
+                value_template: "{{ active_action == 'curtailed' }}"
+            sequence:
+              - if:
+                  - condition: template
+                    value_template: "{{ current_status != new_status_text }}"
+                then:
+                  - service: input_number.set_value
+                    target:
+                      entity_id: input_number.alphaess_helper_max_feed_to_grid
+                    data:
+                      value: 0
+
           # --- EXPORT / SOLAR SOAK TRIGGER ---
           # Activates Maximise Output (Mode 4) for up to 60 minutes when an export
           # tier or solar soak pre-export condition is met and battery has charge to give.
@@ -1028,8 +1055,13 @@ automation:
               - condition: template
                 value_template: >
                   {{ current_status != new_status_text and
-                     ('Exporting' in current_status or 'Importing' in current_status or 'Solar Soak' in current_status) }}
+                     ('Exporting' in current_status or 'Importing' in current_status or 'Solar Soak' in current_status or 'Solar Curtailed' in current_status) }}
             then:
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.alphaess_helper_max_feed_to_grid
+                data:
+                  value: 100
               - service: input_boolean.turn_off
                 target:
                   entity_id: input_boolean.alphaess_helper_dispatch
@@ -1074,17 +1106,17 @@ automation:
                 {% else %}⚡ System State Changed{% endif %}
               message: >
                 {% if active_action == 'solar_soak' %}
-                  Pre-exporting battery from {{ soc | int(0) }}% down to {{ soak_target_soc | int(20) }}% Target SoC to absorb upcoming midday solar. Feed-in: ${{ export_price }}/kWh.
+                  Pre-exporting battery from {{ soc | int(0) }}% down to {{ soak_target_soc | int(20) }}% Target SoC to absorb upcoming midday solar. Feed-in: {{ export_price | round(1) }}c/kWh.
                 {% elif active_action == 'idle' %}
                   Prices have normalised. Returning to standard self-consumption.
                 {% elif active_action == 'curtailed' %}
-                  Feed-in price is ${{ export_price }}/kWh. Halting exports to protect against negative tariffs.
+                  Feed-in price is {{ export_price | round(1) }}c/kWh. Halting exports to protect against negative tariffs.
                 {% elif active_action == 'disabled' %}
                   The master switch has been turned off. Returning to manual control.
                 {% elif 'export' in active_action %}
-                  {{ new_status_text }} - Feed-in is ${{ export_price }}/kWh (SOC: {{ soc }}%).
+                  {{ new_status_text }} - Feed-in is {{ export_price | round(1) }}c/kWh (SOC: {{ soc }}%).
                 {% elif 'import' in active_action %}
-                  {{ new_status_text }} - Import is ${{ import_price }}/kWh (SOC: {{ soc }}%).
+                  {{ new_status_text }} - Import is {{ import_price | round(1) }}c/kWh (SOC: {{ soc }}%).
                 {% else %}
-                  {{ new_status_text }} (Feed-in: ${{ export_price }}/kWh, Import: ${{ import_price }}/kWh, SOC: {{ soc }}%).
+                  {{ new_status_text }} (Feed-in: {{ export_price | round(1) }}c/kWh, Import: {{ import_price | round(1) }}c/kWh, SOC: {{ soc }}%).
                 {% endif %}
