@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Added automatic recovery of `amber_solar_soak_completed_today` at midnight, 06:00, and on Target SOC changes when surplus battery capacity remains before 10:30 cutoff
 - Added start deadband hysteresis (`soc >= soak_target_soc + soc_hysteresis`) to prevent micro-cycling on negligible battery surpluses
 - Corrected automation entity ID for activity logbook in debug dashboard
+- Fixed `amber_average_daytime_house_load` calculation dividing by a hardcoded 7 days by using `age_coverage_ratio` to properly scale the 7-day average when history is missing or truncated
+- Removed redundant `- soc_hysteresis` logic in `soak_exp_active` that falsely implied pre-exporting could dip below `target_soc`
 
 ## [1.3.1-pre.1] - 2026-10-05
 
