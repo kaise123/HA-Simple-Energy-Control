@@ -205,7 +205,10 @@ template:
         icon: mdi:home-lightning-bolt
         state: >
           {% set change = states('sensor.amber_7_day_daytime_house_load') | float(0) %}
-          {{ (change / 7.0) | round(2) }}
+          {% set coverage = state_attr('sensor.amber_7_day_daytime_house_load', 'age_coverage_ratio') | float(1.0) %}
+          {% set days = 7.0 * coverage %}
+          {% set days = days if days > 0.5 else 1.0 %}
+          {{ (change / days) | round(2) }}
 
       # Detects optimal discharge window for Solar Soak by finding the highest average
       # feed-in tariff block before solar generation ramp-up or forecasted negative prices.
@@ -861,7 +864,7 @@ automation:
                and export_price >= (states('input_number.amber_soak_min_pre_export_price')|float(0.00) - (hysteresis if currently_soaking else 0))
                and (
                  (currently_soaking
-                  and soc > (soak_target_soc - soc_hysteresis)
+                  and soc >= soak_target_soc
                   and soc > soak_min_soc)
                  or
                  (not currently_soaking
