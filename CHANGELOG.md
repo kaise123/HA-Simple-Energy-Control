@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- Fixed race condition at 16:00:00 by moving Target SOC calculation trigger to 16:05:00, allowing Solcast template sensor to transition to tomorrow's forecast
+- Hardened Solar Soak completion condition to require reaching target SOC without positive hysteresis buffer (`soc <= soak_target_soc` instead of `+ soc_hysteresis`)
+- Added automatic recovery of `amber_solar_soak_completed_today` at midnight, 06:00, and on Target SOC changes when surplus battery capacity remains before 10:30 cutoff
+- Added start deadband hysteresis (`soc >= soak_target_soc + soc_hysteresis`) to prevent micro-cycling on negligible battery surpluses
+- Corrected automation entity ID for activity logbook in debug dashboard
+
 ## [1.3.1-pre.1] - 2026-10-05
 
 ### Changed
