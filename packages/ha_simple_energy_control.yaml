@@ -228,7 +228,9 @@ template:
 
           {# Check if pre-export is needed today #}
           {% set soc_to_discharge = current_soc - target_soc %}
-          {% set surplus_predicted = target_soc < max_target_soc and soc_to_discharge > 0 and current_soc > min_soak_soc %}
+          {% set soc_hysteresis = states('input_number.amber_soc_hysteresis') | float(5) %}
+          {% set min_surplus = 0 if currently_soaking else soc_hysteresis %}
+          {% set surplus_predicted = target_soc < max_target_soc and soc_to_discharge >= min_surplus and current_soc > min_soak_soc %}
 
           {% if completed_today or not surplus_predicted or batt_cap <= 0 or inverter_power <= 0 %}
             off
@@ -306,14 +308,16 @@ template:
           {% endif %}
 
   - trigger:
-      # Freeze the target SOC calculation to specific times (midnight, 6AM, 4PM)
+      # Freeze the target SOC calculation to specific times (midnight, 6AM, 4:05PM)
       # to prevent micro-adjustments as the Solcast forecast dances during the day.
+      # 16:05 (rather than 16:00:00) gives the Solcast forecast sensor time to switch
+      # to tomorrow's forecast (which evaluates at 16:00:00) without race conditions.
       - platform: time
         at: "00:01:00"
       - platform: time
         at: "06:00:00"
       - platform: time
-        at: "16:00:00"
+        at: "16:05:00"
       - platform: homeassistant
         event: start
       - platform: state
@@ -650,6 +654,15 @@ automation:
         at: "16:00:00"
         id: "cycle_reset"
       - platform: time
+        at: "00:01:00"
+        id: "soak_recheck"
+      - platform: time
+        at: "06:00:00"
+        id: "soak_recheck"
+      - platform: state
+        entity_id: sensor.amber_solar_soak_target_soc
+        id: "target_change"
+      - platform: time
         at: "10:30:00"
         id: "daytime_cutoff"
     action:
@@ -657,6 +670,27 @@ automation:
           - conditions:
               - condition: trigger
                 id: "cycle_reset"
+            sequence:
+              - service: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.amber_solar_soak_completed_today
+          - conditions:
+              - condition: trigger
+                id:
+                  - "soak_recheck"
+                  - "target_change"
+              - condition: template
+                value_template: >
+                  {% set soc = states('sensor.alphaess_soc_battery') | float(0) %}
+                  {% set target = states('sensor.amber_solar_soak_target_soc') | float(100) %}
+                  {% set max_target = states('input_number.amber_soak_max_target_soc') | float(100) %}
+                  {% set min_soak = states('input_number.amber_soak_min_soc') | float(50) %}
+                  {% set hysteresis = states('input_number.amber_soc_hysteresis') | float(5) %}
+                  {{ is_state('input_boolean.amber_solar_soak_completed_today', 'on')
+                     and target < max_target
+                     and soc > (target + hysteresis)
+                     and soc > min_soak
+                     and now() < today_at("10:30") }}
             sequence:
               - service: input_boolean.turn_off
                 target:
@@ -831,7 +865,7 @@ automation:
                   and soc > soak_min_soc)
                  or
                  (not currently_soaking
-                  and soc > soak_target_soc
+                  and soc >= (soak_target_soc + soc_hysteresis)
                   and soc > soak_min_soc)
                ) }}
 
@@ -1064,7 +1098,7 @@ automation:
                   - condition: template
                     value_template: >
                       {{ 'Solar Soak' in current_status and
-                         (soc <= (soak_target_soc + soc_hysteresis) or soc <= soak_min_soc) }}
+                         (soc <= soak_target_soc or soc <= soak_min_soc) }}
                 then:
                   - service: input_boolean.turn_on
                     target:
