@@ -860,7 +860,7 @@ automation:
 
           # 4.5 Negative Import Price (Highest Priority)
           neg_import_active: >
-            {{ enabled and not curtailment_active and is_state('input_boolean.amber_negative_import_enabled', 'on') and import_price < 0 }}
+            {{ enabled and is_state('input_boolean.amber_negative_import_enabled', 'on') and import_price < 0 }}
 
           # 5. Solar Soak Pre-Export Logic
           soak_target_soc: "{{ states('sensor.amber_solar_soak_target_soc') | float(20) }}"
@@ -950,8 +950,8 @@ automation:
           # 7. Determine the single active action (in priority order).
           active_action: >
             {%- if not enabled -%} disabled
-            {%- elif curtailment_active -%} curtailed
             {%- elif neg_import_active -%} neg_import
+            {%- elif curtailment_active -%} curtailed
             {%- elif soak_exp_active -%} solar_soak
             {%- elif pred_exp_active -%} holding_spike
             {%- elif pred_imp_active -%} holding_import
