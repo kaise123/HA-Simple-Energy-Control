@@ -616,6 +616,11 @@ input_boolean:
     name: Enable Import Tier 2
     icon: mdi:numeric-2-circle
 
+  # Negative import behavior
+  amber_negative_import_enabled:
+    name: Enable Negative Import (Grid Draw & PV Off)
+    icon: mdi:power-plug-outline
+
   # Predictive hold toggles — suspend normal tier rules when a future
   # price event is anticipated in the 12-hour Amber Express forecast
   amber_predictive_export_hold:
@@ -758,6 +763,7 @@ automation:
           - input_boolean.amber_export_tier_3_enabled
           - input_boolean.amber_import_tier_1_enabled
           - input_boolean.amber_import_tier_2_enabled
+          - input_boolean.amber_negative_import_enabled
           - input_boolean.amber_predictive_export_hold
           - input_boolean.amber_predictive_import_hold
           - input_boolean.amber_solar_soak_enabled
@@ -852,6 +858,9 @@ automation:
                and states('sensor.amber_min_import_forecast_12h')|float(0) <= states('input_number.amber_import_forecast_threshold')|float(-99)
                and import_price > states('input_number.amber_import_absolute_override')|float(-99) }}
 
+          # 4.5 Negative Import Price (Highest Priority)
+          neg_import_active: >
+            {{ enabled and not curtailment_active and is_state('input_boolean.amber_negative_import_enabled', 'on') and import_price < 0 }}
 
           # 5. Solar Soak Pre-Export Logic
           soak_target_soc: "{{ states('sensor.amber_solar_soak_target_soc') | float(20) }}"
@@ -942,6 +951,7 @@ automation:
           active_action: >
             {%- if not enabled -%} disabled
             {%- elif curtailment_active -%} curtailed
+            {%- elif neg_import_active -%} neg_import
             {%- elif soak_exp_active -%} solar_soak
             {%- elif pred_exp_active -%} holding_spike
             {%- elif pred_imp_active -%} holding_import
@@ -959,6 +969,7 @@ automation:
           new_status_text: >
             {%- if active_action == 'disabled' -%} 🔴 Automation Disabled
             {%- elif active_action == 'curtailed' -%} 🛑 Solar Curtailed
+            {%- elif active_action == 'neg_import' -%} 📥 Grid Drawing (Negative Import Price)
             {%- elif active_action == 'holding_spike' -%} 🛑 Holding Exports (Spike Forecasted!)
             {%- elif active_action == 'holding_import' -%} 🛑 Holding Imports (Drop Forecasted!)
             {%- elif active_action == 'solar_soak' -%} ☀️ Solar Soak Pre-Export Active
@@ -976,7 +987,54 @@ automation:
       - condition: template
         value_template: "{{ enabled or 'Automation Disabled' not in current_status }}"
 
+      - if:
+          - condition: template
+            value_template: "{{ active_action != 'neg_import' and is_state('switch.pv_switch', 'off') }}"
+        then:
+          - service: switch.turn_on
+            target:
+              entity_id: switch.pv_switch
+
       - choose:
+          # --- NEGATIVE IMPORT TRIGGER ---
+          - conditions:
+              - condition: template
+                value_template: "{{ active_action == 'neg_import' }}"
+            sequence:
+              - if:
+                  - condition: template
+                    value_template: "{{ is_state('switch.pv_switch', 'on') }}"
+                then:
+                  - service: switch.turn_off
+                    target:
+                      entity_id: switch.pv_switch
+              - if:
+                  - condition: template
+                    value_template: >
+                      {{ current_status != new_status_text
+                         or is_state('input_boolean.alphaess_helper_dispatch', 'off')
+                         or not is_state('input_select.alphaess_helper_dispatch_mode', 'Maximise Consumption (7)')
+                         or (as_timestamp(now()) - (states.input_boolean.alphaess_helper_dispatch.last_changed | as_timestamp(0))) > 2700 }}
+                then:
+                  - service: input_select.select_option
+                    target:
+                      entity_id: input_select.alphaess_helper_dispatch_mode
+                    data:
+                      option: "Maximise Consumption (7)"
+                  - service: input_number.set_value
+                    target:
+                      entity_id: input_number.alphaess_helper_dispatch_duration
+                    data:
+                      value: >
+                        {% if states('input_number.alphaess_helper_dispatch_duration') | float(0) == 60 %}
+                          59
+                        {% else %}
+                          60
+                        {% endif %}
+                  - service: input_boolean.turn_on
+                    target:
+                      entity_id: input_boolean.alphaess_helper_dispatch
+
           # --- CURTAILMENT TRIGGER ---
           - conditions:
               - condition: template
@@ -1084,7 +1142,7 @@ automation:
               - condition: template
                 value_template: >
                   {{ current_status != new_status_text and
-                     ('Exporting' in current_status or 'Importing' in current_status or 'Solar Soak' in current_status or 'Solar Curtailed' in current_status) }}
+                     ('Exporting' in current_status or 'Importing' in current_status or 'Solar Soak' in current_status or 'Solar Curtailed' in current_status or 'Grid Drawing' in current_status) }}
             then:
               - service: input_number.set_value
                 target:
@@ -1127,6 +1185,7 @@ automation:
               title: >
                 {% if active_action == 'solar_soak' %}☀️ Solar Soak Pre-Export Active
                 {% elif active_action == 'curtailed' %}🛑 Solar Export Curtailed
+                {% elif active_action == 'neg_import' %}📥 Grid Drawing Active
                 {% elif active_action == 'idle' %}🔄 HA Simple Energy Control Reset
                 {% elif 'export' in active_action %}📈 Amber Export Initiated!
                 {% elif 'import' in active_action %}📉 Amber Import Initiated!
@@ -1136,6 +1195,8 @@ automation:
               message: >
                 {% if active_action == 'solar_soak' %}
                   Pre-exporting battery from {{ soc | int(0) }}% down to {{ soak_target_soc | int(20) }}% Target SoC to absorb upcoming midday solar. Feed-in: {{ export_price | round(1) }}c/kWh.
+                {% elif active_action == 'neg_import' %}
+                  Import price is negative ({{ import_price | round(1) }}c/kWh). PV is disabled and system is set to Maximise Consumption.
                 {% elif active_action == 'idle' %}
                   Prices have normalised. Returning to standard self-consumption.
                 {% elif active_action == 'curtailed' %}

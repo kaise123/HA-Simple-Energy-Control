@@ -77,6 +77,8 @@ views:
               {% set min_imp_12h = states('sensor.amber_min_import_forecast_12h') | float(0) %}
               {% set pred_imp_active = is_state('input_boolean.amber_predictive_import_hold', 'on') and min_imp_12h <= pred_imp_thresh and imp_price > pred_imp_override %}
               
+              {% set neg_import_active = enabled and not curtailment_active and is_state('input_boolean.amber_negative_import_enabled', 'on') and imp_price < 0 %}
+              
               {% set soak_target_soc = states('sensor.amber_solar_soak_target_soc') | float(20) %}
               {% set soak_min_soc = states('input_number.amber_soak_min_soc') | float(20) %}
               {% set soak_min_price = states('input_number.amber_soak_min_pre_export_price') | float(0.00) %}
@@ -120,6 +122,8 @@ views:
               🔴 **AUTOMATION DISABLED:** Master switch is OFF. The system is in manual self-consumption mode.
               {% elif curtailment_active %}
               🛑 **CURTAILMENT ACTIVE:** Live feed-in price is **{{ exp_price | round(1) }}c/kWh**, which is is at or below your threshold of **{{ curtailment_thresh | round(1) }}c/kWh**. All grid exports are blocked to protect against paying export tariffs. Inverter commanded to Mode 5.
+              {% elif neg_import_active %}
+              📥 **GRID DRAWING (NEGATIVE IMPORT PRICE):** Import price is **{{ imp_price | round(1) }}c/kWh** which is below zero! PV has been disabled and inverter is commanded to Mode 7 (Maximise Consumption) to draw purely from the grid.
               {% elif pred_exp_active %}
               🛑 **PREDICTIVE EXPORT HOLD ACTIVE:** Amber forecasts a massive future spike of **{{ max_exp_12h | round(1) }}c/kWh** within 1–12h (threshold: **{{ pred_exp_thresh | round(1) }}c/kWh**). Current exports are paused to preserve battery capacity until the spike occurs or live price crosses **{{ pred_exp_override | round(1) }}c/kWh**.
               {% elif pred_imp_active %}
@@ -152,31 +156,34 @@ views:
               * **2. Negative Price Curtailment**
                 * *Status:* {% if curtailment_active %}🛑 **TRIGGERED**{% else %}⚪ False{% endif %}
                 * *Values:* Live Feed-in: {{ exp_price | round(1) }}c/kWh (Curtails if at or below {{ curtailment_thresh | round(1) }}c/kWh)
-              * **3. Solar Soak Pre-Export**
+              * **3. Negative Import Price**
+                * *Status:* {% if neg_import_active %}📥 **TRIGGERED**{% else %}⚪ False{% endif %}
+                * *Values:* Live Import: {{ imp_price | round(1) }}c/kWh (Triggers if below 0c/kWh and switch is ON)
+              * **4. Solar Soak Pre-Export**
                 * *Status:* {% if soak_exp_active %}☀️ **SOAKING**{% else %}⚪ False{% endif %}
                 * *Values:* Window: {{ 'ACTIVE' if neg_forecast_on else 'WAITING' }}, Done Today: {{ 'YES' if completed_today else 'NO' }}, Live Price: {{ exp_price | round(1) }}c/kWh (Req: at or above {{ soak_min_price | round(1) }}c/kWh), Live SOC: {{ soc }}% (Req: above {{ soak_target_soc | int(20) }}%)
-              * **4. Predictive Export Hold**
+              * **5. Predictive Export Hold**
                 * *Status:* {% if pred_exp_active %}🛑 **HOLDING**{% else %}⚪ False{% endif %}
                 * *Values:* 12h Forecast Max: {{ max_exp_12h | round(1) }}c/kWh (Holds if at or above {{ pred_exp_thresh | round(1) }}c/kWh, Override at {{ pred_exp_override | round(1) }}c/kWh)
-              * **5. Predictive Import Hold**
+              * **6. Predictive Import Hold**
                 * *Status:* {% if pred_imp_active %}🛑 **HOLDING**{% else %}⚪ False{% endif %}
                 * *Values:* 12h Forecast Min: {{ min_imp_12h | round(1) }}c/kWh (Holds if at or below {{ pred_imp_thresh | round(1) }}c/kWh, Override at {{ pred_imp_override | round(1) }}c/kWh)
-              * **6. Export Minimum SOC Guard**
+              * **7. Export Minimum SOC Guard**
                 * *Status:* {% if exp_guard_active %}🛑 **GUARD ACTIVE**{% else %}⚪ False{% endif %}
                 * *Values:* Live SOC: {{ soc }}% (Blocks if at or below {{ states('input_number.amber_export_min_soc_guard') }}%)
-              * **7. Export Tier 1**
+              * **8. Export Tier 1**
                 * *Status:* {% if t1_exp %}📤 **MATCHED**{% else %}⚪ False{% endif %}
                 * *Values:* Live SOC: {{ soc }}% (Req: at or above {{ t1_exp_soc }}%), Live Price: {{ exp_price | round(1) }}c/kWh (Req: at or above {{ t1_exp_price | round(1) }}c/kWh)
-              * **8. Export Tier 2**
+              * **9. Export Tier 2**
                 * *Status:* {% if t2_exp %}📤 **MATCHED**{% else %}⚪ False{% endif %}
                 * *Values:* Live SOC: {{ soc }}% (Req: at or above {{ t2_exp_soc }}%), Live Price: {{ exp_price | round(1) }}c/kWh (Req: at or above {{ t2_exp_price | round(1) }}c/kWh)
-              * **9. Export Tier 3**
+              * **10. Export Tier 3**
                 * *Status:* {% if t3_exp %}📤 **MATCHED**{% else %}⚪ False{% endif %}
                 * *Values:* Live SOC: {{ soc }}% (Req: at or above {{ t3_exp_soc }}%), Live Price: {{ exp_price | round(1) }}c/kWh (Req: at or above {{ t3_exp_price | round(1) }}c/kWh)
-              * **10. Import Tier 1**
+              * **11. Import Tier 1**
                 * *Status:* {% if t1_imp %}📥 **MATCHED**{% else %}⚪ False{% endif %}
                 * *Values:* Live SOC: {{ soc }}% (Req: at or below {{ t1_imp_soc }}%), Live Price: {{ imp_price | round(1) }}c/kWh (Req: at or below {{ t1_imp_price | round(1) }}c/kWh)
-              * **11. Import Tier 2**
+              * **12. Import Tier 2**
                 * *Status:* {% if t2_imp %}📥 **MATCHED**{% else %}⚪ False{% endif %}
                 * *Values:* Live SOC: {{ soc }}% (Req: at or below {{ t2_imp_soc }}%), Live Price: {{ imp_price | round(1) }}c/kWh (Req: at or below {{ t2_imp_price | round(1) }}c/kWh)
       # --- SOLAR SOAK MATHEMATICAL INSPECTOR ---

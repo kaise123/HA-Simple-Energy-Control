@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Feature: Added negative import logic to automatically disable PV (`switch.pv_switch`) and command inverter to Mode 7 (Maximise Consumption) when import prices drop below zero
+
 ### Fixed
 - Fixed race condition at 16:00:00 by moving Target SOC calculation trigger to 16:05:00, allowing Solcast template sensor to transition to tomorrow's forecast
 - Hardened Solar Soak completion condition to require reaching target SOC without positive hysteresis buffer (`soc <= soak_target_soc` instead of `+ soc_hysteresis`)
