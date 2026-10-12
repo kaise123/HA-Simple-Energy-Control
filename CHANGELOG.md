@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Added LocalOnly/ to .gitignore to exclude site-specific deployment files
+
 ### Fixed
 - Debounced price and forecast triggers to collapse rapid 5-minute Amber update bursts into a single execution
 - Eliminated redundant Modbus writes and dispatch re-triggers during solar curtailment and steady-state operation
