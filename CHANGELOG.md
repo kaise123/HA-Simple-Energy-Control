@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.2-pre.1] - 2026-10-12
+
 ### Added
 - Feature: Added configurable negative import logic to automatically disable PV (`switch.pv_switch`) and command inverter to Mode 7 (Maximise Consumption) when import prices drop below a user-defined threshold
 
