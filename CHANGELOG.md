@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Debounced price and forecast triggers to collapse rapid 5-minute Amber update bursts into a single execution
 - Eliminated redundant Modbus writes and dispatch re-triggers during solar curtailment and steady-state operation
 - Added inverter dispatch cancellation and reset to Normal Mode (5) upon entering solar curtailment
+- Corrected manual trigger button entity IDs in debug dashboard to target active dispatch automation
 
 ## [1.3.2-pre.1] - 2026-10-12
 

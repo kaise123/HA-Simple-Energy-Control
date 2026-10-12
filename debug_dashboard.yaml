@@ -36,7 +36,7 @@ views:
                   action: call-service
                   service: automation.trigger
                   target:
-                    entity_id: automation.alphaess_amber_optimization_tiered
+                    entity_id: automation.energy_alphaess_amber_dispatch_optimization_tiered
               - type: button
                 name: Reset Inverter (Mode 5)
                 icon: mdi:restore
@@ -304,7 +304,7 @@ views:
               action: call-service
               service: automation.trigger
               target:
-                entity_id: automation.alphaess_amber_optimization_tiered
+                entity_id: automation.energy_alphaess_amber_dispatch_optimization_tiered
           - type: button
             name: Reset Inverter to Normal (Mode 5)
             icon: mdi:restore
