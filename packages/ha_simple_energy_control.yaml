@@ -449,6 +449,14 @@ input_number:
     mode: box
     unit_of_measurement: "c/kWh"
 
+  amber_negative_import_price_threshold:
+    name: Negative Import Maximum Price
+    min: -500
+    max: 0
+    step: 1
+    mode: box
+    unit_of_measurement: "c/kWh"
+
   # --- HYSTERESIS --------------------------------------------------------
   # Adds a buffer around price thresholds to prevent rapid mode toggling
   # when live prices fluctuate near a configured threshold.
@@ -789,6 +797,7 @@ automation:
           - input_number.amber_import_forecast_threshold
           - input_number.amber_export_absolute_override
           - input_number.amber_import_absolute_override
+          - input_number.amber_negative_import_price_threshold
           - input_number.amber_export_min_soc_guard
           - input_number.amber_battery_capacity
           - input_number.amber_soak_max_target_soc
@@ -833,12 +842,13 @@ automation:
           currently_importing_t2: "{{ 'Importing (Tier 2)' in current_status }}"
           currently_soaking: "{{ 'Solar Soak' in current_status }}"
           currently_curtailed: "{{ 'Solar Curtailed' in current_status }}"
+          currently_neg_import: "{{ 'Grid Drawing' in current_status }}"
 
           # 3. Negative Price Curtailment Check
           # Active when curtailment toggle is ON, battery is full, and live feed-in price is at or below threshold (with hysteresis)
           curtailment_active: >
             {{ is_state('input_boolean.amber_curtailment_enabled', 'on')
-               and is_state('sensor.alphaess_battery_full', 'true')
+               and is_state('sensor.alphaess_battery_full', ['true', 'True', 'on'])
                and (
                  (currently_curtailed
                   and export_price <= (states('input_number.amber_curtailment_price_threshold')|float(0.00) + hysteresis))
@@ -860,7 +870,11 @@ automation:
 
           # 4.5 Negative Import Price (Highest Priority)
           neg_import_active: >
-            {{ enabled and is_state('input_boolean.amber_negative_import_enabled', 'on') and import_price < 0 }}
+            {{ enabled and is_state('input_boolean.amber_negative_import_enabled', 'on') and (
+                 (currently_neg_import and import_price <= (states('input_number.amber_negative_import_price_threshold')|float(0) + hysteresis))
+                 or
+                 (not currently_neg_import and import_price <= states('input_number.amber_negative_import_price_threshold')|float(0))
+               ) }}
 
           # 5. Solar Soak Pre-Export Logic
           soak_target_soc: "{{ states('sensor.amber_solar_soak_target_soc') | float(20) }}"

@@ -164,7 +164,7 @@ views:
               
               **Your Current Active Rules:**
               
-              {% if is_state('input_boolean.amber_negative_import_enabled', 'on') %}✅{% else %}❌{% endif %} **Negative Import:** When import price drops below 0c/kWh, PV is disabled and system is set to Maximise Consumption (drawing purely from the grid).
+              {% if is_state('input_boolean.amber_negative_import_enabled', 'on') %}✅{% else %}❌{% endif %} **Negative Import:** When import price drops below **{{ states('input_number.amber_negative_import_price_threshold') }}c/kWh**, PV is disabled and system is set to Maximise Consumption (drawing purely from the grid).
               
               {% if is_state('input_boolean.amber_import_tier_1_enabled', 'on') %}✅{% else %}❌{% endif %} **Tier 1:** When battery is below **{{ states('input_number.amber_import_soc_1') }}%**, force-charge if import price is below **{{ states('input_number.amber_import_price_1') }}c/kWh**.
               
@@ -174,6 +174,8 @@ views:
               - type: section
                 label: Negative Price (Highest Priority)
               - entity: input_boolean.amber_negative_import_enabled
+              - entity: input_number.amber_negative_import_price_threshold
+                name: "Disable PV & max consume if price (c) is below:"
               - type: section
                 label: Tier 1 (Lowest SOC)
               - entity: input_boolean.amber_import_tier_1_enabled
