@@ -824,6 +824,12 @@ automation:
              (as_timestamp(state_attr('timer.alphaess_helper_dispatch_timer', 'finishes_at')) - as_timestamp(now())) < 300 }}
 
     action:
+      # Debounce trailing-edge: Amber Express & Solcast update multiple price, forecast,
+      # and tariff sensors within a few milliseconds of each other. With 'mode: restart',
+      # this 2-second delay cancels intermediate trigger executions and lets all sensor
+      # updates settle, ensuring the automation evaluates only once per 5-minute price tick.
+      - delay: "00:00:02"
+
       - variables:
           # 1. Fetch current states
           soc: "{{ states('sensor.alphaess_soc_battery') | float(0) }}"
@@ -1017,6 +1023,15 @@ automation:
             sequence:
               - if:
                   - condition: template
+                    value_template: "{{ states('input_number.alphaess_helper_max_feed_to_grid') | float(0) != 100 }}"
+                then:
+                  - service: input_number.set_value
+                    target:
+                      entity_id: input_number.alphaess_helper_max_feed_to_grid
+                    data:
+                      value: 100
+              - if:
+                  - condition: template
                     value_template: "{{ is_state('switch.pv_switch', 'on') }}"
                 then:
                   - service: switch.turn_off
@@ -1030,11 +1045,15 @@ automation:
                          or not is_state('input_select.alphaess_helper_dispatch_mode', 'Maximise Consumption (7)')
                          or (as_timestamp(now()) - (states.input_boolean.alphaess_helper_dispatch.last_changed | as_timestamp(0))) > 2700 }}
                 then:
-                  - service: input_select.select_option
-                    target:
-                      entity_id: input_select.alphaess_helper_dispatch_mode
-                    data:
-                      option: "Maximise Consumption (7)"
+                  - if:
+                      - condition: template
+                        value_template: "{{ not is_state('input_select.alphaess_helper_dispatch_mode', 'Maximise Consumption (7)') }}"
+                    then:
+                      - service: input_select.select_option
+                        target:
+                          entity_id: input_select.alphaess_helper_dispatch_mode
+                        data:
+                          option: "Maximise Consumption (7)"
                   - service: input_number.set_value
                     target:
                       entity_id: input_number.alphaess_helper_dispatch_duration
@@ -1054,15 +1073,29 @@ automation:
               - condition: template
                 value_template: "{{ active_action == 'curtailed' }}"
             sequence:
+              # Halt grid export via feed-to-grid limit (only if not already 0 to avoid redundant Modbus writes)
               - if:
                   - condition: template
-                    value_template: "{{ current_status != new_status_text }}"
+                    value_template: "{{ states('input_number.alphaess_helper_max_feed_to_grid') | float(100) != 0 }}"
                 then:
                   - service: input_number.set_value
                     target:
                       entity_id: input_number.alphaess_helper_max_feed_to_grid
                     data:
                       value: 0
+              # Ensure any active dispatch is stopped and inverter returned to normal mode
+              - if:
+                  - condition: template
+                    value_template: >
+                      {{ is_state('input_boolean.alphaess_helper_dispatch', 'on')
+                         or not is_state('input_select.alphaess_helper_dispatch_mode', 'Normal Mode (5)') }}
+                then:
+                  - service: input_boolean.turn_off
+                    target:
+                      entity_id: input_boolean.alphaess_helper_dispatch
+                  - service: input_button.press
+                    target:
+                      entity_id: input_button.alphaess_helper_dispatch_reset_full
 
           # --- EXPORT / SOLAR SOAK TRIGGER ---
           # Activates Maximise Output (Mode 4) for up to 60 minutes when an export
@@ -1077,6 +1110,16 @@ automation:
                   {{ (active_action == 'solar_soak' and soc > soak_min_soc) or
                      (active_action in ['export_1', 'export_2', 'export_3'] and soc > states('input_number.amber_export_min_soc_guard') | float(10)) }}
             sequence:
+              # Restore grid feed limit if transitioning from curtailment
+              - if:
+                  - condition: template
+                    value_template: "{{ states('input_number.alphaess_helper_max_feed_to_grid') | float(0) != 100 }}"
+                then:
+                  - service: input_number.set_value
+                    target:
+                      entity_id: input_number.alphaess_helper_max_feed_to_grid
+                    data:
+                      value: 100
               # Modbus dispatch write (only on state change, timeout, or 45-min keep-alive refresh)
               - if:
                   - condition: template
@@ -1086,11 +1129,15 @@ automation:
                          or not is_state('input_select.alphaess_helper_dispatch_mode', 'Maximise Output (4)')
                          or (as_timestamp(now()) - (states.input_boolean.alphaess_helper_dispatch.last_changed | as_timestamp(0))) > 2700 }}
                 then:
-                  - service: input_select.select_option
-                    target:
-                      entity_id: input_select.alphaess_helper_dispatch_mode
-                    data:
-                      option: "Maximise Output (4)"
+                  - if:
+                      - condition: template
+                        value_template: "{{ not is_state('input_select.alphaess_helper_dispatch_mode', 'Maximise Output (4)') }}"
+                    then:
+                      - service: input_select.select_option
+                        target:
+                          entity_id: input_select.alphaess_helper_dispatch_mode
+                        data:
+                          option: "Maximise Output (4)"
                   - service: input_number.set_value
                     target:
                       entity_id: input_number.alphaess_helper_dispatch_duration
@@ -1118,6 +1165,16 @@ automation:
               - condition: template
                 value_template: "{{ soc < 98 }}"
             sequence:
+              # Restore grid feed limit if transitioning from curtailment
+              - if:
+                  - condition: template
+                    value_template: "{{ states('input_number.alphaess_helper_max_feed_to_grid') | float(0) != 100 }}"
+                then:
+                  - service: input_number.set_value
+                    target:
+                      entity_id: input_number.alphaess_helper_max_feed_to_grid
+                    data:
+                      value: 100
               # Modbus dispatch write (only on state change, timeout, or 45-min keep-alive refresh)
               - if:
                   - condition: template
@@ -1127,11 +1184,15 @@ automation:
                          or not is_state('input_select.alphaess_helper_dispatch_mode', 'Optimise Consumption (6)')
                          or (as_timestamp(now()) - (states.input_boolean.alphaess_helper_dispatch.last_changed | as_timestamp(0))) > 2700 }}
                 then:
-                  - service: input_select.select_option
-                    target:
-                      entity_id: input_select.alphaess_helper_dispatch_mode
-                    data:
-                      option: "Optimise Consumption (6)"
+                  - if:
+                      - condition: template
+                        value_template: "{{ not is_state('input_select.alphaess_helper_dispatch_mode', 'Optimise Consumption (6)') }}"
+                    then:
+                      - service: input_select.select_option
+                        target:
+                          entity_id: input_select.alphaess_helper_dispatch_mode
+                        data:
+                          option: "Optimise Consumption (6)"
                   - service: input_number.set_value
                     target:
                       entity_id: input_number.alphaess_helper_dispatch_duration
@@ -1158,17 +1219,27 @@ automation:
                   {{ current_status != new_status_text and
                      ('Exporting' in current_status or 'Importing' in current_status or 'Solar Soak' in current_status or 'Solar Curtailed' in current_status or 'Grid Drawing' in current_status) }}
             then:
-              - service: input_number.set_value
-                target:
-                  entity_id: input_number.alphaess_helper_max_feed_to_grid
-                data:
-                  value: 100
-              - service: input_boolean.turn_off
-                target:
-                  entity_id: input_boolean.alphaess_helper_dispatch
-              - service: input_button.press
-                target:
-                  entity_id: input_button.alphaess_helper_dispatch_reset_full
+              - if:
+                  - condition: template
+                    value_template: "{{ states('input_number.alphaess_helper_max_feed_to_grid') | float(0) != 100 }}"
+                then:
+                  - service: input_number.set_value
+                    target:
+                      entity_id: input_number.alphaess_helper_max_feed_to_grid
+                    data:
+                      value: 100
+              - if:
+                  - condition: template
+                    value_template: >
+                      {{ is_state('input_boolean.alphaess_helper_dispatch', 'on')
+                         or not is_state('input_select.alphaess_helper_dispatch_mode', 'Normal Mode (5)') }}
+                then:
+                  - service: input_boolean.turn_off
+                    target:
+                      entity_id: input_boolean.alphaess_helper_dispatch
+                  - service: input_button.press
+                    target:
+                      entity_id: input_button.alphaess_helper_dispatch_reset_full
               - if:
                   - condition: template
                     value_template: >
@@ -1180,13 +1251,16 @@ automation:
                       entity_id: input_boolean.amber_solar_soak_completed_today
 
       # --- 9. UPDATE STATE MACHINE ---
-      # Update dashboard status indicator. This MUST happen AFTER the physical Modbus commands 
-      # above to prevent 'mode: restart' race conditions from swallowing hardware writes.
-      - service: input_text.set_value
-        target:
-          entity_id: input_text.amber_active_tier_status
-        data:
-          value: "{{ new_status_text }}"
+      # Update dashboard status indicator only when state has actually transitioned.
+      - if:
+          - condition: template
+            value_template: "{{ current_status != new_status_text }}"
+        then:
+          - service: input_text.set_value
+            target:
+              entity_id: input_text.amber_active_tier_status
+            data:
+              value: "{{ new_status_text }}"
 
       # --- 10. UNIFIED NOTIFICATION MANAGER ---
       # Fires a context-aware push notification exactly once on every state transition.
