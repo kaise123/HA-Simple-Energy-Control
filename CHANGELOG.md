@@ -8,8 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - Added LocalOnly/ to .gitignore to exclude site-specific deployment files
+- Added inverter connectivity failsafe (`binary_sensor.alphaess_inverter_connected`) and dashboard offline alerts
 
 ### Fixed
+- Prevented erroneous grid force-charging and dispatches when inverter is offline or Modbus is disconnected
+- Suppressed Modbus writes and spurious normalisation resets while inverter is unavailable
 - Debounced price and forecast triggers to collapse rapid 5-minute Amber update bursts into a single execution
 - Eliminated redundant Modbus writes and dispatch re-triggers during solar curtailment and steady-state operation
 - Added inverter dispatch cancellation and reset to Normal Mode (5) upon entering solar curtailment

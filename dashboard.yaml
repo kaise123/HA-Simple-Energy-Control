@@ -6,12 +6,26 @@ views:
   - title: Import/Export Automation Control
     icon: mdi:solar-power
     cards:
+      # --- INVERTER OFFLINE WARNING BANNER ---
+      - type: conditional
+        conditions:
+          - entity: binary_sensor.alphaess_inverter_connected
+            state: "off"
+        card:
+          type: markdown
+          content: >
+            ### ⚠️ Inverter Offline / Modbus Error
+            **Communication with AlphaESS inverter is currently unavailable.**
+            Automated grid charging, exporting, and solar curtailment are paused to protect your system.
+
       # --- SYSTEM STATUS & MASTER SWITCH ---
       - type: entities
         title: System Status
         entities:
           - entity: input_boolean.amber_automation_enabled
             name: Master Automation Switch
+          - entity: binary_sensor.alphaess_inverter_connected
+            name: Inverter Communication
           - entity: input_text.amber_active_tier_status
             name: Current System Status
             icon: mdi:information-outline

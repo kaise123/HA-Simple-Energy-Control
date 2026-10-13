@@ -97,6 +97,18 @@ sensor:
 # price windows, and expected solar yield to compute predictive dispatches.
 # ---------------------------------------------------------------------------
 template:
+  - binary_sensor:
+      # Evaluates inverter communication health across key Modbus registers.
+      # When unavailable (e.g. WiFi drop, inverter reboot, or Modbus timeout),
+      # the automation freezes dispatches to prevent false grid charges or resets.
+      - name: "AlphaESS Inverter Connected"
+        unique_id: alphaess_inverter_connected
+        device_class: connectivity
+        icon: mdi:lan-connect
+        state: >
+          {{ has_value('sensor.alphaess_soc_battery') and
+             has_value('sensor.alphaess_inverter_work_mode') }}
+
   - sensor:
       # Maximum expected feed-in (export) price over the next 1–24 hours.
       # A high value here triggers the predictive export hold, preserving
@@ -216,6 +228,9 @@ template:
       - name: "Amber Negative Export Forecast 12h"
         unique_id: amber_negative_export_forecast_12h
         icon: mdi:alert-circle-outline
+        availability: >
+          {{ has_value('sensor.alphaess_soc_battery') and
+             state_attr('sensor.amber_express_home_feed_in_price', 'forecast') is not none }}
         state: >
           {% set fcast = state_attr('sensor.amber_express_home_feed_in_price', 'forecast') %}
           {% set thresh = states('input_number.amber_curtailment_price_threshold') | float(0.00) %}
@@ -747,6 +762,10 @@ automation:
     mode: restart
 
     trigger:
+      # Inverter connectivity transitions — react immediately when inverter goes offline or recovers
+      - platform: state
+        entity_id: binary_sensor.alphaess_inverter_connected
+
       # Price, SOC, and Forecast changes — react to real updates only; ignore unavailable/unknown
       # (e.g. on HA startup or sensor outage) to prevent spurious dispatch commands.
       - platform: state
@@ -831,8 +850,11 @@ automation:
       - delay: "00:00:02"
 
       - variables:
-          # 1. Fetch current states
-          soc: "{{ states('sensor.alphaess_soc_battery') | float(0) }}"
+          # Inverter Connectivity Check
+          inverter_online: "{{ is_state('binary_sensor.alphaess_inverter_connected', 'on') }}"
+
+          # 1. Fetch current states (guarded against missing/offline inverter)
+          soc: "{{ states('sensor.alphaess_soc_battery') | float(-1) if inverter_online else -1 }}"
           import_price: "{{ (states('sensor.amber_express_home_general_price') | float(0)) * 100 }}"
           export_price: "{{ (states('sensor.amber_express_home_feed_in_price') | float(0)) * 100 }}"
           hysteresis: "{{ states('input_number.amber_price_hysteresis') | float(0) }}"
@@ -853,7 +875,7 @@ automation:
           # 3. Negative Price Curtailment Check
           # Active when curtailment toggle is ON, battery is full, and live feed-in price is at or below threshold (with hysteresis)
           curtailment_active: >
-            {{ is_state('input_boolean.amber_curtailment_enabled', 'on')
+            {{ enabled and inverter_online and is_state('input_boolean.amber_curtailment_enabled', 'on')
                and is_state('sensor.alphaess_battery_full', ['true', 'True', 'on'])
                and (
                  (currently_curtailed
@@ -865,18 +887,18 @@ automation:
 
           # 4. Predictive Hold Logic (with absolute overrides)
           pred_exp_active: >
-            {{ is_state('input_boolean.amber_predictive_export_hold', 'on')
+            {{ enabled and inverter_online and is_state('input_boolean.amber_predictive_export_hold', 'on')
                and states('sensor.amber_max_export_forecast_12h')|float(0) >= states('input_number.amber_export_forecast_threshold')|float(99)
                and export_price < states('input_number.amber_export_absolute_override')|float(99) }}
 
           pred_imp_active: >
-            {{ is_state('input_boolean.amber_predictive_import_hold', 'on')
+            {{ enabled and inverter_online and is_state('input_boolean.amber_predictive_import_hold', 'on')
                and states('sensor.amber_min_import_forecast_12h')|float(0) <= states('input_number.amber_import_forecast_threshold')|float(-99)
                and import_price > states('input_number.amber_import_absolute_override')|float(-99) }}
 
           # 4.5 Negative Import Price (Highest Priority)
           neg_import_active: >
-            {{ enabled and is_state('input_boolean.amber_negative_import_enabled', 'on') and (
+            {{ enabled and inverter_online and is_state('input_boolean.amber_negative_import_enabled', 'on') and (
                  (currently_neg_import and import_price <= (states('input_number.amber_negative_import_price_threshold')|float(0) + hysteresis))
                  or
                  (not currently_neg_import and import_price <= states('input_number.amber_negative_import_price_threshold')|float(0))
@@ -886,7 +908,7 @@ automation:
           soak_target_soc: "{{ states('sensor.amber_solar_soak_target_soc') | float(20) }}"
           soak_min_soc: "{{ states('input_number.amber_soak_min_soc') | float(20) }}"
           soak_exp_active: >
-            {{ enabled and not curtailment_active and not pred_exp_active
+            {{ enabled and inverter_online and not curtailment_active and not pred_exp_active
                and is_state('input_boolean.amber_solar_soak_enabled', 'on')
                and is_state('sensor.amber_negative_export_forecast_12h', 'on')
                and is_state('input_boolean.amber_solar_soak_completed_today', 'off')
@@ -903,7 +925,7 @@ automation:
 
           # 6. Evaluate export and import tier rules (blocked if curtailment is active)
           t1_exp: >
-            {{ enabled and not curtailment_active and not pred_exp_active
+            {{ enabled and inverter_online and not curtailment_active and not pred_exp_active
                and is_state('input_boolean.amber_export_tier_1_enabled', 'on')
                and (
                  (currently_exporting_t1
@@ -916,7 +938,7 @@ automation:
                ) }}
 
           t2_exp: >
-            {{ enabled and not curtailment_active and not pred_exp_active
+            {{ enabled and inverter_online and not curtailment_active and not pred_exp_active
                and is_state('input_boolean.amber_export_tier_2_enabled', 'on')
                and (
                  (currently_exporting_t2
@@ -929,7 +951,7 @@ automation:
                ) }}
 
           t3_exp: >
-            {{ enabled and not curtailment_active and not pred_exp_active
+            {{ enabled and inverter_online and not curtailment_active and not pred_exp_active
                and is_state('input_boolean.amber_export_tier_3_enabled', 'on')
                and (
                  (currently_exporting_t3
@@ -942,8 +964,9 @@ automation:
                ) }}
 
           t1_imp: >
-            {{ enabled and not pred_imp_active
+            {{ enabled and inverter_online and not pred_imp_active
                and is_state('input_boolean.amber_import_tier_1_enabled', 'on')
+               and soc >= 0
                and (
                  (currently_importing_t1
                   and soc <= (states('input_number.amber_import_soc_1')|float(0) + soc_hysteresis)
@@ -955,8 +978,9 @@ automation:
                ) }}
 
           t2_imp: >
-            {{ enabled and not pred_imp_active
+            {{ enabled and inverter_online and not pred_imp_active
                and is_state('input_boolean.amber_import_tier_2_enabled', 'on')
+               and soc >= 0
                and (
                  (currently_importing_t2
                   and soc <= (states('input_number.amber_import_soc_2')|float(0) + soc_hysteresis)
@@ -970,6 +994,7 @@ automation:
           # 7. Determine the single active action (in priority order).
           active_action: >
             {%- if not enabled -%} disabled
+            {%- elif not inverter_online -%} inverter_offline
             {%- elif neg_import_active -%} neg_import
             {%- elif curtailment_active -%} curtailed
             {%- elif soak_exp_active -%} solar_soak
@@ -988,6 +1013,7 @@ automation:
           # or Modbus writes when dynamic variables (like live price) fluctuate.
           new_status_text: >
             {%- if active_action == 'disabled' -%} 🔴 Automation Disabled
+            {%- elif active_action == 'inverter_offline' -%} ⚠️ Inverter Offline (Modbus Error)
             {%- elif active_action == 'curtailed' -%} 🛑 Solar Curtailed
             {%- elif active_action == 'neg_import' -%} 📥 Grid Drawing (Negative Import Price)
             {%- elif active_action == 'holding_spike' -%} 🛑 Holding Exports (Spike Forecasted!)
@@ -1009,7 +1035,7 @@ automation:
 
       - if:
           - condition: template
-            value_template: "{{ active_action != 'neg_import' and is_state('switch.pv_switch', 'off') }}"
+            value_template: "{{ active_action not in ['neg_import', 'inverter_offline'] and is_state('switch.pv_switch', 'off') }}"
         then:
           - service: switch.turn_on
             target:
@@ -1210,13 +1236,15 @@ automation:
         # --- IDLE / DISABLED / HOLDING / CURTAILED (RETURN TO NORMAL) ---
         # Resets the inverter to standard self-consumption via the reset button.
         # Only fires when leaving an active export, import, or solar soak session —
-        # prevents spurious Modbus writes when disabling from idle, or when a
-        # predictive hold activates while the inverter is already in normal mode.
+        # prevents spurious Modbus writes when disabling from idle, when a
+        # predictive hold activates while the inverter is already in normal mode,
+        # or when the inverter is offline / unreachable via Modbus.
         default:
           - if:
               - condition: template
                 value_template: >
-                  {{ current_status != new_status_text and
+                  {{ active_action != 'inverter_offline' and
+                     current_status != new_status_text and
                      ('Exporting' in current_status or 'Importing' in current_status or 'Solar Soak' in current_status or 'Solar Curtailed' in current_status or 'Grid Drawing' in current_status) }}
             then:
               - if:
@@ -1271,7 +1299,9 @@ automation:
           - service: notify.mobile_app_phone   # ← update to your device
             data:
               title: >
-                {% if active_action == 'solar_soak' %}☀️ Solar Soak Pre-Export Active
+                {% if active_action == 'inverter_offline' %}⚠️ AlphaESS Inverter Offline
+                {% elif 'Inverter Offline' in current_status and active_action != 'inverter_offline' %}🔄 AlphaESS Inverter Reconnected
+                {% elif active_action == 'solar_soak' %}☀️ Solar Soak Pre-Export Active
                 {% elif active_action == 'curtailed' %}🛑 Solar Export Curtailed
                 {% elif active_action == 'neg_import' %}📥 Grid Drawing Active
                 {% elif active_action == 'idle' %}🔄 HA Simple Energy Control Reset
@@ -1281,7 +1311,11 @@ automation:
                 {% elif active_action == 'disabled' %}🔴 Automation Disabled
                 {% else %}⚡ System State Changed{% endif %}
               message: >
-                {% if active_action == 'solar_soak' %}
+                {% if active_action == 'inverter_offline' %}
+                  Communication with AlphaESS inverter lost via Modbus. Automated battery control and solar curtailment are paused to prevent erroneous actions.
+                {% elif 'Inverter Offline' in current_status and active_action != 'inverter_offline' %}
+                  AlphaESS inverter connection restored. Resuming automated energy management (Status: {{ new_status_text }}).
+                {% elif active_action == 'solar_soak' %}
                   Pre-exporting battery from {{ soc | int(0) }}% down to {{ soak_target_soc | int(20) }}% Target SoC to absorb upcoming midday solar. Feed-in: {{ export_price | round(1) }}c/kWh.
                 {% elif active_action == 'neg_import' %}
                   Import price is negative ({{ import_price | round(1) }}c/kWh). PV is disabled and system is set to Maximise Consumption.
