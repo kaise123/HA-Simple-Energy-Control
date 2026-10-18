@@ -212,7 +212,7 @@ views:
             content: >
               ### 🔮 Predictive Battery Hold
               
-              Pauses export or import tiers when extreme price events are forecasted 1–12 hours ahead, unless live prices trigger an absolute release.
+              Pauses export or import tiers when extreme price events are forecasted in the next 12 hours, unless live prices trigger an absolute release.
               
               **Your Current Active Rules:**
               
@@ -226,7 +226,7 @@ views:
               - entity: input_boolean.amber_predictive_export_hold
                 name: Enable Predictive Export Hold
               - entity: sensor.amber_max_export_forecast_12h
-                name: Highest Future Export Price (1-12h)
+                name: Highest Future Export Price (Next 12h)
               - entity: input_number.amber_export_forecast_threshold
                 name: "Hold if future spike exceeds (c):"
               - entity: input_number.amber_export_absolute_override
@@ -236,7 +236,7 @@ views:
               - entity: input_boolean.amber_predictive_import_hold
                 name: Enable Predictive Import Hold
               - entity: sensor.amber_min_import_forecast_12h
-                name: Lowest Future Import Price (1-12h)
+                name: Lowest Future Import Price (Next 12h)
               - entity: input_number.amber_import_forecast_threshold
                 name: "Hold if future drop is below (c):"
               - entity: input_number.amber_import_absolute_override

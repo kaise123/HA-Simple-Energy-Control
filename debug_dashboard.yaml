@@ -29,6 +29,10 @@ views:
                 name: Force Dispatch Trigger Active
               - entity: input_number.alphaess_helper_dispatch_duration
                 name: Active Dispatch Duration (min)
+              - entity: input_boolean.alphaess_helper_dispatch_pv_switch
+                name: PV Switch Helper (Negative Import Cutoff)
+              - entity: input_number.alphaess_helper_max_feed_to_grid
+                name: Grid Feed-In Limit (Curtailment)
           - type: horizontal-stack
             cards:
               - type: button
@@ -90,63 +94,70 @@ views:
               {% set neg_forecast_on = is_state('sensor.amber_negative_export_forecast_12h', 'on') %}
               {% set currently_soaking = 'Solar Soak' in current_status %}
               {% set completed_today = is_state('input_boolean.amber_solar_soak_completed_today', 'on') %}
-              {% set soak_exp_active = enabled and inverter_online and not curtailment_active and is_state('input_boolean.amber_solar_soak_enabled', 'on') and not completed_today and neg_forecast_on and exp_price >= (soak_min_price - (hysteresis if currently_soaking else 0)) and (((currently_soaking and soc > soak_target_soc and soc > soak_min_soc)) or (not currently_soaking and soc >= (soak_target_soc + soc_hysteresis) and soc > soak_min_soc)) %}
+              {% set soak_exp_active = enabled and inverter_online and not curtailment_active and not pred_exp_active and is_state('input_boolean.amber_solar_soak_enabled', 'on') and not completed_today and neg_forecast_on and exp_price >= (soak_min_price - (hysteresis if currently_soaking else 0)) and (((currently_soaking and soc > soak_target_soc and soc > soak_min_soc)) or (not currently_soaking and soc >= (soak_target_soc + soc_hysteresis) and soc > soak_min_soc)) %}
               
               {% set currently_t1_exp = 'Exporting (Tier 1)' in current_status %}
               {% set t1_exp_soc = states('input_number.amber_export_soc_1') | float(100) %}
               {% set t1_exp_price = states('input_number.amber_export_price_1') | float(99) %}
-              {% set t1_exp = enabled and inverter_online and not curtailment_active and is_state('input_boolean.amber_export_tier_1_enabled', 'on') and (((currently_t1_exp and soc >= (t1_exp_soc - soc_hysteresis) and exp_price >= (t1_exp_price - hysteresis))) or (not currently_t1_exp and soc >= t1_exp_soc and exp_price >= t1_exp_price)) %}
+              {% set t1_exp = enabled and inverter_online and not curtailment_active and not pred_exp_active and is_state('input_boolean.amber_export_tier_1_enabled', 'on') and (((currently_t1_exp and soc > states('input_number.amber_export_min_soc_guard') | float(10) and soc >= (t1_exp_soc - soc_hysteresis) and exp_price >= (t1_exp_price - hysteresis))) or (not currently_t1_exp and soc >= t1_exp_soc and exp_price >= t1_exp_price)) %}
               
               {% set currently_t2_exp = 'Exporting (Tier 2)' in current_status %}
               {% set t2_exp_soc = states('input_number.amber_export_soc_2') | float(100) %}
               {% set t2_exp_price = states('input_number.amber_export_price_2') | float(99) %}
-              {% set t2_exp = enabled and inverter_online and not curtailment_active and is_state('input_boolean.amber_export_tier_2_enabled', 'on') and (((currently_t2_exp and soc >= (t2_exp_soc - soc_hysteresis) and exp_price >= (t2_exp_price - hysteresis))) or (not currently_t2_exp and soc >= t2_exp_soc and exp_price >= t2_exp_price)) %}
+              {% set t2_exp = enabled and inverter_online and not curtailment_active and not pred_exp_active and is_state('input_boolean.amber_export_tier_2_enabled', 'on') and (((currently_t2_exp and soc > states('input_number.amber_export_min_soc_guard') | float(10) and soc >= (t2_exp_soc - soc_hysteresis) and exp_price >= (t2_exp_price - hysteresis))) or (not currently_t2_exp and soc >= t2_exp_soc and exp_price >= t2_exp_price)) %}
               
               {% set currently_t3_exp = 'Exporting (Tier 3)' in current_status %}
               {% set t3_exp_soc = states('input_number.amber_export_soc_3') | float(100) %}
               {% set t3_exp_price = states('input_number.amber_export_price_3') | float(99) %}
-              {% set t3_exp = enabled and inverter_online and not curtailment_active and is_state('input_boolean.amber_export_tier_3_enabled', 'on') and (((currently_t3_exp and soc >= (t3_exp_soc - soc_hysteresis) and exp_price >= (t3_exp_price - hysteresis))) or (not currently_t3_exp and soc >= t3_exp_soc and exp_price >= t3_exp_price)) %}
+              {% set t3_exp = enabled and inverter_online and not curtailment_active and not pred_exp_active and is_state('input_boolean.amber_export_tier_3_enabled', 'on') and (((currently_t3_exp and soc > states('input_number.amber_export_min_soc_guard') | float(10) and soc >= (t3_exp_soc - soc_hysteresis) and exp_price >= (t3_exp_price - hysteresis))) or (not currently_t3_exp and soc >= t3_exp_soc and exp_price >= t3_exp_price)) %}
               
               {% set currently_t1_imp = 'Importing (Tier 1)' in current_status %}
               {% set t1_imp_soc = states('input_number.amber_import_soc_1') | float(0) %}
               {% set t1_imp_price = states('input_number.amber_import_price_1') | float(-99) %}
-              {% set t1_imp = enabled and inverter_online and is_state('input_boolean.amber_import_tier_1_enabled', 'on') and soc >= 0 and soc < 98 and (((currently_t1_imp and soc <= (t1_imp_soc + soc_hysteresis) and imp_price <= (t1_imp_price + hysteresis))) or (not currently_t1_imp and soc <= t1_imp_soc and imp_price <= t1_imp_price)) %}
+              {% set t1_imp = enabled and inverter_online and not pred_imp_active and is_state('input_boolean.amber_import_tier_1_enabled', 'on') and soc >= 0 and soc < 98 and (((currently_t1_imp and soc <= (t1_imp_soc + soc_hysteresis) and imp_price <= (t1_imp_price + hysteresis))) or (not currently_t1_imp and soc <= t1_imp_soc and imp_price <= t1_imp_price)) %}
               
               {% set currently_t2_imp = 'Importing (Tier 2)' in current_status %}
               {% set t2_imp_soc = states('input_number.amber_import_soc_2') | float(0) %}
               {% set t2_imp_price = states('input_number.amber_import_price_2') | float(-99) %}
-              {% set t2_imp = enabled and inverter_online and is_state('input_boolean.amber_import_tier_2_enabled', 'on') and soc >= 0 and soc < 98 and (((currently_t2_imp and soc <= (t2_imp_soc + soc_hysteresis) and imp_price <= (t2_imp_price + hysteresis))) or (not currently_t2_imp and soc <= t2_imp_soc and imp_price <= t2_imp_price)) %}
+              {% set t2_imp = enabled and inverter_online and not pred_imp_active and is_state('input_boolean.amber_import_tier_2_enabled', 'on') and soc >= 0 and soc < 98 and (((currently_t2_imp and soc <= (t2_imp_soc + soc_hysteresis) and imp_price <= (t2_imp_price + hysteresis))) or (not currently_t2_imp and soc <= t2_imp_soc and imp_price <= t2_imp_price)) %}
               
-              {% set hold_exp_active = (soak_exp_active or t1_exp or t2_exp or t3_exp) and pred_exp_active %}
-              {% set exp_guard_active = (t1_exp or t2_exp or t3_exp) and soc <= states('input_number.amber_export_min_soc_guard') | float(10) %}
-              {% set hold_imp_active = (t1_imp or t2_imp) and pred_imp_active %}
+              {% set soak_exp_raw = enabled and inverter_online and not curtailment_active and is_state('input_boolean.amber_solar_soak_enabled', 'on') and not completed_today and neg_forecast_on and exp_price >= soak_min_price and soc >= (soak_target_soc + soc_hysteresis) and soc > soak_min_soc %}
+              {% set t1_exp_raw = enabled and inverter_online and not curtailment_active and is_state('input_boolean.amber_export_tier_1_enabled', 'on') and soc >= t1_exp_soc and exp_price >= t1_exp_price %}
+              {% set t2_exp_raw = enabled and inverter_online and not curtailment_active and is_state('input_boolean.amber_export_tier_2_enabled', 'on') and soc >= t2_exp_soc and exp_price >= t2_exp_price %}
+              {% set t3_exp_raw = enabled and inverter_online and not curtailment_active and is_state('input_boolean.amber_export_tier_3_enabled', 'on') and soc >= t3_exp_soc and exp_price >= t3_exp_price %}
+              {% set t1_imp_raw = enabled and inverter_online and is_state('input_boolean.amber_import_tier_1_enabled', 'on') and soc >= 0 and soc < 98 and soc <= t1_imp_soc and imp_price <= t1_imp_price %}
+              {% set t2_imp_raw = enabled and inverter_online and is_state('input_boolean.amber_import_tier_2_enabled', 'on') and soc >= 0 and soc < 98 and soc <= t2_imp_soc and imp_price <= t2_imp_price %}
+              
+              {% set hold_exp_active = (soak_exp_raw or t1_exp_raw or t2_exp_raw or t3_exp_raw) and pred_exp_active %}
+              {% set exp_guard_active = (t1_exp_raw or t2_exp_raw or t3_exp_raw) and soc <= states('input_number.amber_export_min_soc_guard') | float(10) %}
+              {% set hold_imp_active = (t1_imp_raw or t2_imp_raw) and pred_imp_active %}
               
               ---
               
               **🎯 Active Decision & Reason:**
               
-              {% if not enabled %}
-              🔴 **AUTOMATION DISABLED:** Master switch is OFF. The system is in manual self-consumption mode.
-              {% elif not inverter_online %}
+              {% if not inverter_online %}
               ⚠️ **INVERTER OFFLINE (MODBUS ERROR):** Communication with the AlphaESS inverter is currently unavailable. All automated dispatches, grid charging, and curtailment commands are paused to prevent erroneous actions.
+              {% elif not enabled %}
+              🔴 **AUTOMATION DISABLED:** Master switch is OFF. The system is in manual self-consumption mode.
               {% elif neg_import_active %}
               📥 **GRID DRAWING (NEGATIVE IMPORT PRICE):** Import price is **{{ imp_price | round(1) }}c/kWh** which is at or below **{{ neg_import_thresh | round(1) }}c/kWh**! PV has been disabled and inverter is commanded to Mode 7 (Maximise Consumption) to draw purely from the grid.
               {% elif curtailment_active %}
-              🛑 **CURTAILMENT ACTIVE:** Live feed-in price is **{{ exp_price | round(1) }}c/kWh**, which is is at or below your threshold of **{{ curtailment_thresh | round(1) }}c/kWh**. All grid exports are blocked to protect against paying export tariffs. Inverter commanded to Mode 5.
+              🛑 **CURTAILMENT ACTIVE:** Live feed-in price is **{{ exp_price | round(1) }}c/kWh**, which is at or below your threshold of **{{ curtailment_thresh | round(1) }}c/kWh**. All grid exports are blocked to protect against paying export tariffs. Inverter commanded to Mode 5.
               {% elif hold_exp_active %}
-              🛑 **PREDICTIVE EXPORT HOLD ACTIVE:** Amber forecasts a massive future spike of **{{ max_exp_12h | round(1) }}c/kWh** within 1–12h (threshold: **{{ pred_exp_thresh | round(1) }}c/kWh**). Current exports are paused to preserve battery capacity until the spike occurs or live price crosses **{{ pred_exp_override | round(1) }}c/kWh**.
+              🛑 **PREDICTIVE EXPORT HOLD ACTIVE:** Amber forecasts a massive future spike of **{{ max_exp_12h | round(1) }}c/kWh** in the next 12h (threshold: **{{ pred_exp_thresh | round(1) }}c/kWh**). Current exports are paused to preserve battery capacity until the spike occurs or live price crosses **{{ pred_exp_override | round(1) }}c/kWh**.
               {% elif soak_exp_active %}
               ☀️ **SOLAR SOAK PRE-EXPORT ACTIVE:** Solcast forecasts excess midday solar yield and Amber forecasts negative feed-in prices. Pre-discharging battery from **{{ soc }}%** down to **{{ soak_target_soc | int(20) }}% Target SoC** (min floor: **{{ soak_min_soc }}%**) at **{{ exp_price | round(1) }}c/kWh** to create capacity for midday solar. Inverter commanded to Mode 4.
               {% elif exp_guard_active %}
               🛑 **EXPORT SOC GUARD BLOCKED:** Export conditions met, but current battery SOC (**{{ soc }}%**) is at or below the Emergency Export Guard (**{{ states('input_number.amber_export_min_soc_guard') }}%**). Inverter protected in Mode 5.
-              {% elif t1_exp %}
+              {% elif t1_exp and soc > states('input_number.amber_export_min_soc_guard') | float(10) %}
               📤 **EXPORTING (TIER 1):** Feed-in price (**{{ exp_price | round(1) }}c/kWh**) is at or above **{{ t1_exp_price | round(1) }}c/kWh** and Battery SOC (**{{ soc }}%**) is at or above **{{ t1_exp_soc }}%**. Inverter commanded to Mode 4 (Maximise Output).
-              {% elif t2_exp %}
+              {% elif t2_exp and soc > states('input_number.amber_export_min_soc_guard') | float(10) %}
               📤 **EXPORTING (TIER 2):** Feed-in price (**{{ exp_price | round(1) }}c/kWh**) is at or above **{{ t2_exp_price | round(1) }}c/kWh** and Battery SOC (**{{ soc }}%**) is at or above **{{ t2_exp_soc }}%**. Inverter commanded to Mode 4 (Maximise Output).
-              {% elif t3_exp %}
+              {% elif t3_exp and soc > states('input_number.amber_export_min_soc_guard') | float(10) %}
               📤 **EXPORTING (TIER 3):** Feed-in price (**{{ exp_price | round(1) }}c/kWh**) is at or above **{{ t3_exp_price | round(1) }}c/kWh** and Battery SOC (**{{ soc }}%**) is at or above **{{ t3_exp_soc }}%**. Inverter commanded to Mode 4 (Maximise Output).
               {% elif hold_imp_active %}
-              🛑 **PREDICTIVE IMPORT HOLD ACTIVE:** Amber forecasts a future price drop down to **{{ min_imp_12h | round(1) }}c/kWh** within 1–12h (threshold: **{{ pred_imp_thresh | round(1) }}c/kWh**). Grid charging is paused to wait for the cheaper tariff window.
+              🛑 **PREDICTIVE IMPORT HOLD ACTIVE:** Amber forecasts a future price drop down to **{{ min_imp_12h | round(1) }}c/kWh** in the next 12h (threshold: **{{ pred_imp_thresh | round(1) }}c/kWh**). Grid charging is paused to wait for the cheaper tariff window.
               {% elif t1_imp %}
               📥 **IMPORTING (TIER 1):** General import price (**{{ imp_price | round(1) }}c/kWh**) is at or below **{{ t1_imp_price | round(1) }}c/kWh** and Battery SOC (**{{ soc }}%**) is at or below **{{ t1_imp_soc }}%**. Inverter commanded to Mode 6 (Optimise Consumption).
               {% elif t2_imp %}
@@ -159,12 +170,12 @@ views:
               
               ### 📜 Priority Evaluation Hierarchy
               
-              * **1. Master Automation Switch**
-                * *Status:* {% if enabled %}✅ ON{% else %}❌ OFF{% endif %}
-                * *Values:* Switch: {{ 'Enabled' if enabled else 'Disabled' }}
-              * **2. Inverter Communication Health**
+              * **1. Inverter Communication Health**
                 * *Status:* {% if inverter_online %}✅ ONLINE{% else %}⚠️ **OFFLINE / MODBUS ERROR**{% endif %}
                 * *Values:* Inverter Connection: {{ 'Connected' if inverter_online else 'Disconnected / Unavailable' }}
+              * **2. Master Automation Switch**
+                * *Status:* {% if enabled %}✅ ON{% else %}❌ OFF{% endif %}
+                * *Values:* Switch: {{ 'Enabled' if enabled else 'Disabled' }}
               * **3. Negative Import Price**
                 * *Status:* {% if neg_import_active %}📥 **TRIGGERED**{% else %}⚪ False{% endif %}
                 * *Values:* Live Import: {{ imp_price | round(1) }}c/kWh (Triggers if at or below {{ neg_import_thresh | round(1) }}c/kWh and switch is ON)
@@ -280,9 +291,9 @@ views:
               - entity: sensor.amber_express_home_general_price
                 name: Live General Price ($/kWh)
               - entity: sensor.amber_max_export_forecast_12h
-                name: 12h Max Export Forecast (c/kWh)
+                name: Next 12h Max Export Forecast (c/kWh)
               - entity: sensor.amber_min_import_forecast_12h
-                name: 12h Min Import Forecast (c/kWh)
+                name: Next 12h Min Import Forecast (c/kWh)
               - entity: sensor.amber_negative_export_forecast_12h
                 name: Solar Soak Dispatch Window (24h)
               - type: section
@@ -291,6 +302,8 @@ views:
                 name: Solcast Remaining Today Sensor
               - entity: sensor.amber_solcast_10_forecast
                 name: Extracted Solcast 10% Yield (kWh)
+              - entity: sensor.amber_average_daytime_house_load
+                name: 7-Day Daytime House Load Avg (kWh)
               - entity: sensor.amber_solar_soak_target_soc
                 name: Calculated Soak Target SOC (%)
               - entity: input_boolean.amber_solar_soak_completed_today
@@ -301,6 +314,8 @@ views:
                 name: Inverter Communication
               - entity: sensor.alphaess_soc_battery
                 name: Battery State of Charge (%)
+              - entity: sensor.alphaess_battery_full
+                name: Battery Full Flag
               - entity: sensor.alphaess_power_battery
                 name: Battery Power Flow (W)
               - entity: sensor.alphaess_current_pv_production
@@ -381,7 +396,7 @@ views:
               #### 📥 Recipe 4: Simulate Import Tier 1 Cheap Tariff (Grid Force-Charge)
               * **Goal:** Verify cheap/negative import prices trigger full-power grid charging.
               * **Steps:**
-                1. Under **Import Tier 1**, set **Trigger Price** to `500c` and **Maximum SOC** to `100%`.
+                1. Under **Import Tier 1**, set **Trigger Price** to `500c` and **Maximum SOC** to `100%` (Ensure current battery SOC is below 98%).
                 2. Ensure Predictive Import Hold is not active.
                 3. Click **Re-evaluate Automation Now**.
               * **Expected Result:** Status transitions to **`📥 Importing (Tier 1)`** and Inverter engages **Mode 6 (Optimise Consumption)**.
@@ -429,3 +444,7 @@ views:
                 name: Send Dispatch Command
               - entity: input_button.alphaess_helper_dispatch_reset_full
                 name: Force Reset to Normal (Mode 5)
+              - entity: input_boolean.alphaess_helper_dispatch_pv_switch
+                name: Toggle PV Hardware Switch
+              - entity: input_number.alphaess_helper_max_feed_to_grid
+                name: Override Max Feed-to-Grid (%)
