@@ -1,3 +1,4 @@
 .agents/rules/ha-rules.md
 scratch/
 LocalOnly/
+.venv/

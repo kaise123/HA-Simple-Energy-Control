@@ -9,6 +9,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 - Added LocalOnly/ to .gitignore to exclude site-specific deployment files
 - Added inverter connectivity failsafe (`binary_sensor.alphaess_inverter_connected`) and dashboard offline alerts
+- Standardised automation IDs and aliases (`amber_energy_dispatch_optimization_tiered`, `amber_solar_soak_daily_cycle_manager`, `amber_house_load_tariff_switch`)
+- Added missing automation triggers for `sensor.amber_min_import_forecast_12h` and `input_number.amber_inverter_power`
+- Added comprehensive prerequisite entities to documentation and `USER CONFIGURATION` header
+
+### Changed
+- Scoped predictive export and import holds so they only activate when corresponding tier thresholds are met, preventing false hold statuses and unblocking opposite-direction dispatches
+- Updated `sensor.amber_solcast_10_forecast` to prioritise full-day forecasts before 16:00 and converted 30-minute kW detailed forecasts to kWh (0.5 factor)
+- Resiliently scaled `sensor.amber_average_daytime_house_load` divisor against overnight statistics coverage drops
+- Synchronised debug dashboard decision tree and headroom mathematical inspector with backend package logic
 
 ### Fixed
 - Prevented erroneous grid force-charging and dispatches when inverter is offline or Modbus is disconnected
@@ -17,11 +26,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Eliminated redundant Modbus writes and dispatch re-triggers during solar curtailment and steady-state operation
 - Added inverter dispatch cancellation and reset to Normal Mode (5) upon entering solar curtailment
 - Corrected manual trigger button entity IDs in debug dashboard to target active dispatch automation
+- Replaced non-existent `switch.pv_switch` with `input_boolean.alphaess_helper_dispatch_pv_switch`
+- Fixed solar soak off-by-one discharging past target SOC and decoupled completion latching from `choose: default:`
+- Restricted solar soak dynamic negative price search to morning solar hours (06:00 to 10:30 AM) to prevent overnight misfires
+- Fixed missed hardware resets in `default:` when recovering from inverter communication outages
+- Fixed import tiers hanging in Mode 6 at 98% SOC by adding `soc < 98` directly to import tier variable definitions
+- Corrected forecast sensor unit labels `($/kWh)` to `(c/kWh)` in debug dashboard live telemetry
 
 ## [1.3.2-pre.1] - 2026-10-12
 
 ### Added
-- Feature: Added configurable negative import logic to automatically disable PV (`switch.pv_switch`) and command inverter to Mode 7 (Maximise Consumption) when import prices drop below a user-defined threshold
+- Feature: Added configurable negative import logic to automatically disable PV (`input_boolean.alphaess_helper_dispatch_pv_switch`) and command inverter to Mode 7 (Maximise Consumption) when import prices drop below a user-defined threshold
 
 ### Fixed
 - Fixed case-sensitive battery-full check in curtailment logic to accept 'true', 'True', and 'on'
@@ -43,7 +58,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Fixed predictive export hold falsely triggering by reverting the max export forecast horizon from 24h back to 12h
 - Removed fundamentally flawed `tier_export_forecasted` logic which was falsely triggering "Spike Forecasted" holds when standard export tiers were forecasted
 - Fixed rapid toggling of solar pre-export by adding price hysteresis to the latching logic
-- Fixed negative price curtailment failing to trigger by replacing missing battery full sensor with direct Modbus control of `input_number.alphaess_helper_max_feed_to_grid`
+- Fixed negative price curtailment reliability by adding direct Modbus grid export limiting via `input_number.alphaess_helper_max_feed_to_grid` alongside the battery-full gate (`sensor.alphaess_battery_full`)
 
 ## [1.3.0] - 2026-09-09
 

@@ -51,6 +51,12 @@
 #   Battery state of charge:
 #     sensor.alphaess_soc_battery
 #
+#   Battery full sensor (used to gate curtailment):
+#     sensor.alphaess_battery_full
+#
+#   Inverter work mode sensor (used for inverter health check):
+#     sensor.alphaess_inverter_work_mode
+#
 #   Dispatch mode selector (input_select):
 #     input_select.alphaess_helper_dispatch_mode
 #
@@ -60,8 +66,24 @@
 #   Dispatch trigger (input_boolean):
 #     input_boolean.alphaess_helper_dispatch
 #
+#   PV switch helper (used to disable PV during negative import):
+#     input_boolean.alphaess_helper_dispatch_pv_switch
+#
+#   Grid export limit helper (used to halt export during curtailment):
+#     input_number.alphaess_helper_max_feed_to_grid
+#
 #   Full reset button (returns inverter to normal mode):
 #     input_button.alphaess_helper_dispatch_reset_full
+#
+#   Dispatch timer (used for pre-emptive 5-min dispatch re-arm):
+#     timer.alphaess_helper_dispatch_timer
+#
+# -- HOME ENERGY MONITOR (e.g. Shelly EM) -----------------------------------
+#   Cumulative energy sensor (kWh, used for 7-day house load tracking):
+#     sensor.shelly_ct1_energy
+#
+#   Live power sensor (W, used by dashboard):
+#     sensor.shelly_ct1_power
 #
 # -- NOTIFICATIONS -----------------------------------------------------------
 #   Mobile app notification service:
@@ -110,7 +132,7 @@ template:
              has_value('sensor.alphaess_inverter_work_mode') }}
 
   - sensor:
-      # Maximum expected feed-in (export) price over the next 1–24 hours.
+      # Maximum expected feed-in (export) price over the next 1–12 hours.
       # A high value here triggers the predictive export hold, preserving
       # battery capacity for the upcoming price spike.
       - name: "Amber Max Export Forecast 12h"
@@ -176,10 +198,10 @@ template:
             ] %}
           {% else %}
             {% set candidates = [
-              'sensor.solcast_pv_forecast_forecast_remaining_today',
               'sensor.solcast_pv_forecast_forecast_today',
-              'sensor.solcast_forecast_remaining_today',
-              'sensor.solcast_forecast_today'
+              'sensor.solcast_forecast_today',
+              'sensor.solcast_pv_forecast_forecast_remaining_today',
+              'sensor.solcast_forecast_remaining_today'
             ] %}
           {% endif %}
           {% set ns = namespace(val=0, found=false) %}
@@ -198,7 +220,7 @@ template:
                 {% set total = namespace(t=0) %}
                 {% for slot in detailed %}
                   {% set val = slot.pv_estimate10 if slot.pv_estimate10 is defined else (slot.pv_estimate if slot.pv_estimate is defined else 0) %}
-                  {% set total.t = total.t + (val | float(0)) %}
+                  {% set total.t = total.t + ((val | float(0)) * 0.5) %}
                 {% endfor %}
                 {% set ns.val = total.t | round(2) %}
                 {% set ns.found = true %}
@@ -214,11 +236,12 @@ template:
       - name: "Amber Average Daytime House Load"
         unique_id: amber_average_daytime_house_load
         unit_of_measurement: "kWh"
+        state_class: measurement
         icon: mdi:home-lightning-bolt
         state: >
           {% set change = states('sensor.amber_7_day_daytime_house_load') | float(0) %}
           {% set coverage = state_attr('sensor.amber_7_day_daytime_house_load', 'age_coverage_ratio') | float(1.0) %}
-          {% set days = 7.0 * coverage %}
+          {% set days = 7.0 if coverage >= 0.80 else (7.0 * coverage) %}
           {% set days = days if days > 0.5 else 1.0 %}
           {{ (change / days) | round(2) }}
 
@@ -247,32 +270,27 @@ template:
           {# Check if pre-export is needed today #}
           {% set soc_to_discharge = current_soc - target_soc %}
           {% set soc_hysteresis = states('input_number.amber_soc_hysteresis') | float(5) %}
-          {% set min_surplus = 0 if currently_soaking else soc_hysteresis %}
-          {% set surplus_predicted = target_soc < max_target_soc and soc_to_discharge >= min_surplus and current_soc > min_soak_soc %}
+          {% set surplus_predicted = target_soc < max_target_soc and current_soc > min_soak_soc and ((currently_soaking and soc_to_discharge > 0) or (not currently_soaking and soc_to_discharge >= soc_hysteresis)) %}
 
           {% if completed_today or not surplus_predicted or batt_cap <= 0 or inverter_power <= 0 %}
             off
           {% else %}
-            {# 1. Determine dynamic cutoff time (first negative price window or daytime solar ramp) #}
-            {% set start_horizon = now() %}
-            {% set end_horizon = now() + timedelta(hours=24) %}
+            {# 1. Determine dynamic cutoff time (morning negative price window before 10:30 or 10:30 default) #}
+            {% set today_1030 = today_at("10:30") %}
+            {% set default_cutoff = today_1030 if now() < today_1030 else (today_1030 + timedelta(days=1)) %}
+            {% set morning_start = default_cutoff - timedelta(hours=4, minutes=30) %}
             {% set ns = namespace(t_neg=none) %}
             {% if fcast %}
               {% for item in fcast %}
                 {% set item_dt = as_datetime(item.time) %}
-                {% if item_dt is not none and item_dt > start_horizon and item_dt <= end_horizon and ns.t_neg is none %}
+                {% if item_dt is not none and item_dt > now() and item_dt >= morning_start and item_dt < default_cutoff and ns.t_neg is none %}
                   {% if (item.value | float(0) * 100) <= thresh %}
                     {% set ns.t_neg = item_dt %}
                   {% endif %}
                 {% endif %}
               {% endfor %}
             {% endif %}
-
-            {# Dynamic cutoff: use first negative price if found, else default to daytime solar ramp ~10:30 #}
-            {% set today_1030 = today_at("10:30") %}
-            {% set default_cutoff = today_1030 if now() < today_1030 else (today_1030 + timedelta(days=1)) %}
-            {% set max_cutoff = today_at("16:00") if now() < today_at("16:00") else (today_at("16:00") + timedelta(days=1)) %}
-            {% set cutoff = ns.t_neg if ns.t_neg is not none and ns.t_neg < max_cutoff else default_cutoff %}
+            {% set cutoff = ns.t_neg if ns.t_neg is not none else default_cutoff %}
 
             {% if now() >= cutoff %}
               off
@@ -678,7 +696,7 @@ input_text:
 # AUTOMATION
 # ---------------------------------------------------------------------------
 automation:
-  - id: amber_solar_soak_reset
+  - id: amber_solar_soak_daily_cycle_manager
     alias: "Amber Solar Soak Daily Cycle Manager"
     trigger:
       - platform: time
@@ -750,8 +768,8 @@ automation:
         data:
           option: "{{ trigger.id }}"
 
-  - id: 'alphaess_amber_optimization_tiered'
-    alias: "HA Simple Energy Control: AlphaESS Amber Dispatch"
+  - id: amber_energy_dispatch_optimization_tiered
+    alias: "Amber Energy Dispatch Optimization Tiered"
     description: >
       Maximise Amber Electric profits with multi-tier SOC rules, predictive
       12-hour holds, predictive solar soaking, and negative price curtailment.
@@ -777,6 +795,7 @@ automation:
           - sensor.amber_negative_export_forecast_12h
           - sensor.alphaess_battery_full
           - sensor.amber_max_export_forecast_12h
+          - sensor.amber_min_import_forecast_12h
         not_to:
           - "unknown"
           - "unavailable"
@@ -819,6 +838,7 @@ automation:
           - input_number.amber_negative_import_price_threshold
           - input_number.amber_export_min_soc_guard
           - input_number.amber_battery_capacity
+          - input_number.amber_inverter_power
           - input_number.amber_soak_max_target_soc
           - input_number.amber_soak_min_soc
           - input_number.amber_soak_forecast_weight
@@ -908,14 +928,14 @@ automation:
           soak_target_soc: "{{ states('sensor.amber_solar_soak_target_soc') | float(20) }}"
           soak_min_soc: "{{ states('input_number.amber_soak_min_soc') | float(20) }}"
           soak_exp_active: >
-            {{ enabled and inverter_online and not curtailment_active and not pred_exp_active
+            {{ enabled and inverter_online and not curtailment_active
                and is_state('input_boolean.amber_solar_soak_enabled', 'on')
                and is_state('sensor.amber_negative_export_forecast_12h', 'on')
                and is_state('input_boolean.amber_solar_soak_completed_today', 'off')
                and export_price >= (states('input_number.amber_soak_min_pre_export_price')|float(0.00) - (hysteresis if currently_soaking else 0))
                and (
                  (currently_soaking
-                  and soc >= soak_target_soc
+                  and soc > soak_target_soc
                   and soc > soak_min_soc)
                  or
                  (not currently_soaking
@@ -925,7 +945,7 @@ automation:
 
           # 6. Evaluate export and import tier rules (blocked if curtailment is active)
           t1_exp: >
-            {{ enabled and inverter_online and not curtailment_active and not pred_exp_active
+            {{ enabled and inverter_online and not curtailment_active
                and is_state('input_boolean.amber_export_tier_1_enabled', 'on')
                and (
                  (currently_exporting_t1
@@ -938,7 +958,7 @@ automation:
                ) }}
 
           t2_exp: >
-            {{ enabled and inverter_online and not curtailment_active and not pred_exp_active
+            {{ enabled and inverter_online and not curtailment_active
                and is_state('input_boolean.amber_export_tier_2_enabled', 'on')
                and (
                  (currently_exporting_t2
@@ -951,7 +971,7 @@ automation:
                ) }}
 
           t3_exp: >
-            {{ enabled and inverter_online and not curtailment_active and not pred_exp_active
+            {{ enabled and inverter_online and not curtailment_active
                and is_state('input_boolean.amber_export_tier_3_enabled', 'on')
                and (
                  (currently_exporting_t3
@@ -964,9 +984,10 @@ automation:
                ) }}
 
           t1_imp: >
-            {{ enabled and inverter_online and not pred_imp_active
+            {{ enabled and inverter_online
                and is_state('input_boolean.amber_import_tier_1_enabled', 'on')
                and soc >= 0
+               and soc < 98
                and (
                  (currently_importing_t1
                   and soc <= (states('input_number.amber_import_soc_1')|float(0) + soc_hysteresis)
@@ -978,9 +999,10 @@ automation:
                ) }}
 
           t2_imp: >
-            {{ enabled and inverter_online and not pred_imp_active
+            {{ enabled and inverter_online
                and is_state('input_boolean.amber_import_tier_2_enabled', 'on')
                and soc >= 0
+               and soc < 98
                and (
                  (currently_importing_t2
                   and soc <= (states('input_number.amber_import_soc_2')|float(0) + soc_hysteresis)
@@ -997,13 +1019,13 @@ automation:
             {%- elif not inverter_online -%} inverter_offline
             {%- elif neg_import_active -%} neg_import
             {%- elif curtailment_active -%} curtailed
+            {%- elif (soak_exp_active or t1_exp or t2_exp or t3_exp) and pred_exp_active -%} holding_spike
             {%- elif soak_exp_active -%} solar_soak
-            {%- elif pred_exp_active -%} holding_spike
-            {%- elif pred_imp_active -%} holding_import
             {%- elif (t1_exp or t2_exp or t3_exp) and soc <= states('input_number.amber_export_min_soc_guard') | float(10) -%} holding_soc_guard
             {%- elif t1_exp -%} export_1
             {%- elif t2_exp -%} export_2
             {%- elif t3_exp -%} export_3
+            {%- elif (t1_imp or t2_imp) and pred_imp_active -%} holding_import
             {%- elif t1_imp -%} import_1
             {%- elif t2_imp -%} import_2
             {%- else -%} idle {%- endif -%}
@@ -1035,11 +1057,11 @@ automation:
 
       - if:
           - condition: template
-            value_template: "{{ active_action not in ['neg_import', 'inverter_offline'] and is_state('switch.pv_switch', 'off') }}"
+            value_template: "{{ active_action not in ['neg_import', 'inverter_offline'] and is_state('input_boolean.alphaess_helper_dispatch_pv_switch', 'off') }}"
         then:
-          - service: switch.turn_on
+          - service: input_boolean.turn_on
             target:
-              entity_id: switch.pv_switch
+              entity_id: input_boolean.alphaess_helper_dispatch_pv_switch
 
       - choose:
           # --- NEGATIVE IMPORT TRIGGER ---
@@ -1058,11 +1080,11 @@ automation:
                       value: 100
               - if:
                   - condition: template
-                    value_template: "{{ is_state('switch.pv_switch', 'on') }}"
+                    value_template: "{{ is_state('input_boolean.alphaess_helper_dispatch_pv_switch', 'on') }}"
                 then:
-                  - service: switch.turn_off
+                  - service: input_boolean.turn_off
                     target:
-                      entity_id: switch.pv_switch
+                      entity_id: input_boolean.alphaess_helper_dispatch_pv_switch
               - if:
                   - condition: template
                     value_template: >
@@ -1188,8 +1210,6 @@ automation:
           - conditions:
               - condition: template
                 value_template: "{{ active_action in ['import_1', 'import_2'] }}"
-              - condition: template
-                value_template: "{{ soc < 98 }}"
             sequence:
               # Restore grid feed limit if transitioning from curtailment
               - if:
@@ -1242,10 +1262,7 @@ automation:
         default:
           - if:
               - condition: template
-                value_template: >
-                  {{ active_action != 'inverter_offline' and
-                     current_status != new_status_text and
-                     ('Exporting' in current_status or 'Importing' in current_status or 'Solar Soak' in current_status or 'Solar Curtailed' in current_status or 'Grid Drawing' in current_status) }}
+                value_template: "{{ active_action != 'inverter_offline' }}"
             then:
               - if:
                   - condition: template
@@ -1268,15 +1285,21 @@ automation:
                   - service: input_button.press
                     target:
                       entity_id: input_button.alphaess_helper_dispatch_reset_full
-              - if:
-                  - condition: template
-                    value_template: >
-                      {{ 'Solar Soak' in current_status and
-                         (soc <= soak_target_soc or soc <= soak_min_soc) }}
-                then:
-                  - service: input_boolean.turn_on
-                    target:
-                      entity_id: input_boolean.amber_solar_soak_completed_today
+
+      # --- SOLAR SOAK COMPLETION LATCH ---
+      # Decoupled from choose default: ensures completion is latched even if solar_soak
+      # transitions directly into curtailment, export_1–3, or neg_import.
+      - if:
+          - condition: template
+            value_template: >
+              {{ 'Solar Soak' in current_status and
+                 active_action != 'solar_soak' and
+                 inverter_online and
+                 (soc <= soak_target_soc or soc <= soak_min_soc) }}
+        then:
+          - service: input_boolean.turn_on
+            target:
+              entity_id: input_boolean.amber_solar_soak_completed_today
 
       # --- 9. UPDATE STATE MACHINE ---
       # Update dashboard status indicator only when state has actually transitioned.

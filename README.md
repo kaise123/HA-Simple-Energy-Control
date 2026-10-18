@@ -9,6 +9,7 @@ This can easily be adapted to work with other battery systems and energy provide
 * **Multi-Tier Export and Import Rules:** Define price thresholds that adjust dynamically based on current battery capacity. For example, configure the system to export at 20c/kWh when SOC is >80%, but require 100c/kWh when SOC is <30%.
 * **Predictive Solar Soaking (Pre-Exporting):** Anticipates upcoming midday negative feed-in periods. When Solcast forecasts high solar generation that will exceed battery capacity during negative prices, the system pre-discharges the battery during the morning positive-price window down to a calculated target SOC, creating headroom to soak 100% of solar generation locally.
 * **Negative Feed-in Price Curtailment:** Automatically halts exports and resets the inverter to Normal self-consumption mode when feed-in prices drop below your configured threshold (e.g. ≤ 0c/kWh), preventing costly negative export penalties.
+* **Negative Import Price (Mode 7 & PV Disable):** When general import prices drop below your configured threshold (e.g. ≤ 0c/kWh), the system automatically disables the PV switch helper and commands the inverter to **Maximise Consumption (Mode 7)** to draw full power purely from the grid, taking maximum financial advantage of negative tariffs.
 * **Optimised Grid Charging:** When import prices drop below your threshold, the system activates AlphaESS **Optimise Consumption (Mode 6)** — which force-charges the battery at full power from the grid while PV output also contributes.
 * **Predictive Holds:** Evaluates the next 12 hours of Amber Express price forecasts. If a significant price spike or drop is anticipated, the system temporarily suspends standard rules to preserve battery capacity for higher returns or lower charging costs.
 * **Hysteresis & Safeguards:** Applies configurable buffers to price and SOC thresholds to prevent rapid mode toggling, with dedicated minimum SOC floors for both standard exporting and solar soak pre-exporting.
@@ -41,13 +42,18 @@ Before installing, ensure the following integrations and frontend components are
    - `sensor.solcast_pv_forecast_forecast_remaining_today` (with `estimate10` or `pv_estimate10` conservative forecast attributes).
 
 3. **[AlphaESS Modbus (hillviewlodge.ie/alphaess)](https://projects.hillviewlodge.ie/alphaess/)**: AlphaESS inverter configured for local Modbus TCP control. Provides the helper entities used to trigger dispatch modes:
-   - `input_select.alphaess_helper_dispatch_mode`
-   - `input_number.alphaess_helper_dispatch_duration`
-   - `input_boolean.alphaess_helper_dispatch`
-   - `input_button.alphaess_helper_dispatch_reset_full`
-   - `sensor.alphaess_soc_battery`
+   - `input_select.alphaess_helper_dispatch_mode` — dispatch mode selector
+   - `input_number.alphaess_helper_dispatch_duration` — dispatch duration timer
+   - `input_boolean.alphaess_helper_dispatch` — dispatch execution trigger
+   - `input_boolean.alphaess_helper_dispatch_pv_switch` — PV switch helper (disabled during negative import)
+   - `input_number.alphaess_helper_max_feed_to_grid` — grid feed limit helper (set to 0 during curtailment)
+   - `input_button.alphaess_helper_dispatch_reset_full` — full hardware reset button
+   - `timer.alphaess_helper_dispatch_timer` — hardware dispatch duration timer
+   - `sensor.alphaess_soc_battery` — live battery state of charge
+   - `sensor.alphaess_battery_full` — battery full indicator (gates curtailment)
+   - `sensor.alphaess_inverter_work_mode` — inverter work mode sensor (monitors communication health)
 
-4. **Home Energy Monitor**: Any sensor reporting site consumption in watts (e.g. a Shelly EM). Used by the dashboard only.
+4. **Home Energy Monitor**: A monitor reporting site consumption (e.g. a Shelly EM). Provides `sensor.shelly_ct1_energy` (cumulative kWh used by `utility_meter.amber_house_load_split` for 7-day daytime house load averaging) and `sensor.shelly_ct1_power` (live power in W used by the dashboard).
 
 5. **Mobile App**: A `notify.mobile_app_<devicename>` notification service. Update the device name in the package file's USER CONFIGURATION section.
 
@@ -95,10 +101,17 @@ Open `ha_simple_energy_control.yaml` and review the **USER CONFIGURATION** block
 | Feed-in price sensor | `sensor.amber_express_home_feed_in_price` | Settings → Devices & Services → Amber Express |
 | Solcast remaining sensor | `sensor.solcast_pv_forecast_forecast_remaining_today` | Settings → Devices & Services → Solcast Solar |
 | Battery SOC sensor | `sensor.alphaess_soc_battery` | Settings → Devices & Services → Entities (Or in your battery integration) |
+| Battery full sensor | `sensor.alphaess_battery_full` | Settings → Devices & Services → Entities (Or in your battery integration) |
+| Inverter work mode sensor | `sensor.alphaess_inverter_work_mode` | Settings → Devices & Services → Entities (Or in your battery integration) |
 | Dispatch mode select | `input_select.alphaess_helper_dispatch_mode` | Settings → Devices & Services → Entities (Or in your battery integration) |
 | Dispatch duration | `input_number.alphaess_helper_dispatch_duration` | Settings → Devices & Services → Entities (Or in your battery integration) |
 | Dispatch trigger | `input_boolean.alphaess_helper_dispatch` | Settings → Devices & Services → Entities (Or in your battery integration) |
+| Dispatch PV switch | `input_boolean.alphaess_helper_dispatch_pv_switch` | Settings → Devices & Services → Entities (Or in your battery integration) |
+| Max feed to grid limit | `input_number.alphaess_helper_max_feed_to_grid` | Settings → Devices & Services → Entities (Or in your battery integration) |
 | Reset button | `input_button.alphaess_helper_dispatch_reset_full` | Settings → Devices & Services → Entities (Or in your battery integration) |
+| Dispatch timer | `timer.alphaess_helper_dispatch_timer` | Settings → Devices & Services → Entities (Or in your battery integration) |
+| House load energy sensor | `sensor.shelly_ct1_energy` | Settings → Devices & Services → Entities (Or in your energy monitor) |
+| House load power sensor | `sensor.shelly_ct1_power` | Settings → Devices & Services → Entities (Or in your energy monitor) |
 | Mobile notifications | `notify.mobile_app_phone` | Settings → Devices & Services → Mobile App |
 
 ### 4. Restart Home Assistant
@@ -132,15 +145,20 @@ Go to **Settings → System → Restart**. After restarting, all helpers, templa
 Wholesale electricity prices often plunge into negative territory during midday peak solar generation hours. When this occurs, exporting excess solar costs you money.
 
 The **Predictive Solar Soak** feature solves this proactively:
-1. It monitors Amber Express 12-hour feed-in price forecasts for upcoming negative intervals (≤ 0c/kWh).
-2. When a negative period is detected, it calculates expected excess solar yield using Solcast's conservative 10% forecast (`estimate10` / `pv_estimate10`) and your configured forecast weight.
-3. It derives a **Soak Target SOC** indicating how much battery capacity must be made available to soak up solar generation during the negative pricing window.
-4. During the morning positive-price window (when feed-in price ≥ Min Pre-Export Price), the system engages **Mode 4 (Maximise Output)** to pre-discharge the battery down to the target SOC.
-5. Once discharged, the battery sits ready to absorb 100% of solar generation when negative prices hit.
+1. It monitors Amber Express feed-in price forecasts for upcoming negative intervals (≤ 0c/kWh).
+2. It calculates expected excess solar yield using Solcast's conservative 10% forecast (`estimate10` / `pv_estimate10`) scaled by your forecast weight, deducting your 7-day average daytime house load (`sensor.amber_average_daytime_house_load`) to determine the net solar energy that will charge the battery.
+3. It derives a **Soak Target SOC** indicating how much battery capacity must be made available to soak up net solar generation during the negative pricing window.
+4. It scans candidate discharge windows overnight and in the early morning before the 10:30 AM cutoff (or earlier if negative prices begin before 10:30) to find the highest-paying export tariff window.
+5. During this optimal window, the system engages **Mode 4 (Maximise Output)** to pre-discharge the battery down to the target SOC.
+6. Once discharged, the battery sits ready to absorb 100% of solar generation when negative prices hit.
 
 ### Negative Price Curtailment
 
-If feed-in prices turn negative and the battery is full or unable to soak remaining solar generation, **Negative Price Curtailment** immediately blocks all export modes and commands the inverter to **Normal Mode (Mode 5)**. This prioritises self-consumption and battery charging while stopping forced grid export.
+If feed-in prices turn negative and the battery is full (`sensor.alphaess_battery_full`), **Negative Price Curtailment** immediately halts all grid exporting by setting `input_number.alphaess_helper_max_feed_to_grid` to `0` and returning the inverter to **Normal Mode (Mode 5)**. This prioritises household self-consumption and battery charging while protecting against paying export tariffs. When feed-in prices recover, the export limit is automatically restored to 100%.
+
+### Negative Import Price (Grid Drawing)
+
+When electricity import prices turn negative (at or below your configured threshold), the system automatically engages **Mode 7 (Maximise Consumption)** and disables the solar PV array via `input_boolean.alphaess_helper_dispatch_pv_switch`. This causes all household loads to draw purely from the grid at maximum negative rates, ensuring you get paid to consume grid energy.
 
 ### Setting Tiers
 
@@ -172,6 +190,7 @@ Only relevant for AlphaESS batteries connected via the hillviewlodge.ie/alphaess
 | 4 | Maximise Output | Forces battery discharge; maximises power exported to the grid (used for price spikes and solar soak pre-exporting) |
 | 5 | Normal | Standard self-consumption (the reset & curtailment target) |
 | 6 | Optimise Consumption | Force-charges battery at full power from the grid; PV also contributes (used for cheap imports) |
+| 7 | Maximise Consumption | Serves house load entirely from the grid; used with PV disabled during negative import tariffs |
 
 ---
 
