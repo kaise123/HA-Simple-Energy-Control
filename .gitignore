@@ -4,3 +4,4 @@ LocalOnly/
 .claude/settings.local.json
 CLAUDE.local.md
 CLAUDE.md
+scripts/sync_localonly.local.json

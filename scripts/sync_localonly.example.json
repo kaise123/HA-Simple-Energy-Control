@@ -1,0 +1,6 @@
+{
+  "substitutions": [
+    { "from": "_home_", "to": "_your_amber_site_name_" },
+    { "from": "_phone", "to": "_your_mobile_app_device" }
+  ]
+}
