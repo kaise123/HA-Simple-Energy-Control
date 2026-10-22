@@ -120,7 +120,7 @@ Go to **Settings → System → Restart**. After restarting, all helpers, templa
 
 ### 5. Configure the Dashboards (manual)
 
-`dashboard.yaml` is a complete two-view dashboard for daily use, while `debug_dashboard.yaml` provides advanced diagnostics and simulation tools. They must be applied to the **root** of a dashboard — not to a single view inside one.
+`dashboard.yaml` is a three-view dashboard for daily use (**Overview**: status, the reason for it, and rule toggles; **Rules**: each rule's live result and thresholds; **Tuning**: the soak model, hysteresis, safeguards and manual inverter control). `debug_dashboard.yaml` provides diagnostics and simulation tools. Both read `sensor.amber_engine_decision`, which the engine publishes on every run, so they always show the decision the engine actually made and the reason for it. They must be applied to the **root** of a dashboard — not to a single view inside one.
 
 **Option A — New Dashboards (recommended):**
 1. Go to **Settings → Dashboards** and click **Add Dashboard**.
@@ -133,7 +133,7 @@ Go to **Settings → System → Restart**. After restarting, all helpers, templa
 **Option B — Add views to an existing dashboard:**
 1. Open your existing dashboard and enter Edit mode.
 2. Open the Raw Configuration Editor (⋮ menu).
-3. Under the existing `views:` key, append the two view blocks from `dashboard.yaml` (everything indented under `views:`).
+3. Under the existing `views:` key, append the view blocks from `dashboard.yaml` (everything indented under `views:`).
 4. Click **Save**.
 
 ---

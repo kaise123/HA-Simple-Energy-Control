@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `sensor.amber_engine_decision`: the engine fires an `amber_engine_evaluated` event on every run, and this trigger-based sensor stores the decision, its inputs, the inverter targets and a per-rule classification (🟢 active, 🟡 held only by exit hysteresis, 🔵 met but outranked, 🟠 blocked by a hold or guard, ⚪ not met, ⚫ off). Each rule includes the conditions it checked with actual, entry and exit values, a plain-English summary, and a `sync` self-check against the engine's booleans
+- Entry-only `neg_import_raw` and `curtailment_raw` engine variables (diagnostic only), so hysteresis-held negative import and curtailment can be identified
+- `sensor.amber_solar_soak_target_soc` attributes recording the Solcast, weight, load, capacity and headroom values at the time the target was calculated
+- Debug dashboard health checks: stale decision, inputs changed without a re-evaluation, status helper mismatch, and an inverter helper table comparing the engine's targets with actual helper states
 - Added LocalOnly/ to .gitignore to exclude site-specific deployment files
 - Added inverter connectivity failsafe (`binary_sensor.alphaess_inverter_connected`) and dashboard offline alerts
 - Standardised automation IDs and aliases (`amber_energy_dispatch_optimization_tiered`, `amber_solar_soak_daily_cycle_manager`, `amber_house_load_tariff_switch`)
@@ -16,6 +20,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Added PV switch helper, grid feed-in limit, battery full flag, and daytime load sensors to debug dashboard telemetry and manual overrides
 
 ### Changed
+- Debug dashboard rebuilt as a sections view that reads `sensor.amber_engine_decision`: decision and reason, priority walk-through table, and an expandable per-rule condition breakdown. The roughly 150 lines of duplicated decision Jinja are removed
+- Solar soak inspector now shows the frozen calculation the engine uses, plus a note when a live recalculation would give a different target
+- Main dashboard reorganised into Overview (status with reason, rule toggles as tiles, power flow, prices), Rules (each rule's live verdict next to its toggle and thresholds) and Tuning (soak model, hysteresis, safeguards, manual control) sections views; removed the controls that were duplicated across views and corrected rule wording to "at or above / at or below"
+- Manual inverter controls warn when the master switch is on, and the debug reset buttons ask for confirmation
+- Overview fits one desktop screen in four columns: status and rule toggles; power flow, prices and a 24-hour history of engine status against SOC and soak target; battery and forecast tiles with trend graphs; and key thresholds with +/- controls
 - Scoped predictive export and import holds so they only activate when corresponding tier thresholds are met, preventing false hold statuses and unblocking opposite-direction dispatches
 - Updated `sensor.amber_solcast_10_forecast` to prioritise full-day forecasts before 16:00 and converted 30-minute kW detailed forecasts to kWh (0.5 factor)
 - Resiliently scaled `sensor.amber_average_daytime_house_load` divisor against overnight statistics coverage drops
@@ -34,6 +43,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Debug dashboard: added dispatch timer and automation last-triggered rows, and replaced the unused Solcast remaining-today row with the today/tomorrow sensors the engine reads
 
 ### Fixed
+- Debug dashboard could show a decision the engine had not made: it re-ran its own copy of the decision logic on every render (with drift such as an extra SOC guard check on export tiers and extra gates on curtailment and holds), and recalculated the soak target from live forecasts instead of the frozen value
 - Stopped the return-to-normal and curtailment branches from pressing the full dispatch reset (a Modbus block write) on every run: the dispatch mode helper is now set back to Normal Mode (5) after a reset, so the mode check no longer passes forever
 - Stopped the engine cancelling itself mid-run when it turns off its own dispatch: the status is written before hardware steps, and the `dispatch_off` trigger only re-arms during an active dispatch state
 - Fixed `sensor.amber_negative_export_forecast_12h` comparing against repeated `now()` calls, which never matched: the live price was ignored and the sensor flipped on/off at each 5-minute price boundary

@@ -377,6 +377,242 @@ template:
           {% else %}
             {{ max_target_soc | round(0) | int(95) }}
           {% endif %}
+        # Inputs captured when the target was frozen, so the debug dashboard can show the values the
+        # engine is actually using rather than recalculating from live Solcast/load figures.
+        attributes:
+          calculated_at: "{{ now().isoformat() }}"
+          solcast_kwh: "{{ states('sensor.amber_solcast_10_forecast') | float(0) }}"
+          weight: "{{ states('input_number.amber_soak_forecast_weight') | float(1.0) }}"
+          house_load_kwh: "{{ states('sensor.amber_average_daytime_house_load') | float(0) }}"
+          battery_capacity_kwh: "{{ states('input_number.amber_battery_capacity') | float(10.0) }}"
+          max_target_soc: "{{ states('input_number.amber_soak_max_target_soc') | float(95) }}"
+          min_soc: "{{ states('input_number.amber_soak_min_soc') | float(20) }}"
+          expected_solar_to_batt_kwh: >
+            {% set v = (states('sensor.amber_solcast_10_forecast') | float(0)) * (states('input_number.amber_soak_forecast_weight') | float(1.0))
+                       - (states('sensor.amber_average_daytime_house_load') | float(0)) %}
+            {{ [v, 0] | max | round(2) }}
+          required_headroom_pct: >
+            {% set v = (states('sensor.amber_solcast_10_forecast') | float(0)) * (states('input_number.amber_soak_forecast_weight') | float(1.0))
+                       - (states('sensor.amber_average_daytime_house_load') | float(0)) %}
+            {% set cap = states('input_number.amber_battery_capacity') | float(10.0) %}
+            {{ (([v, 0] | max) / cap * 100.0) | round(1) if cap > 0 else 0 }}
+
+  # Captures each engine run (event fired by amber_energy_dispatch_optimization_tiered) so the
+  # dashboards read the engine's own decision instead of recomputing it. State = active_action.
+  # 'rules' classifies every rule in priority order and lists each condition it checked:
+  #   active / active_hysteresis (chosen; held only by exit hysteresis) / outranked / held /
+  #   not_met / disabled, plus pass (gates) and armed / holding (holds and SOC guard).
+  # The classification uses the engine's booleans; 'checks' only explain them, and 'sync' is false
+  # if the explanation ever disagrees with the engine.
+  - trigger:
+      - platform: event
+        event_type: amber_engine_evaluated
+    sensor:
+      - name: "Amber Engine Decision"
+        unique_id: amber_engine_decision
+        icon: mdi:state-machine
+        state: "{{ trigger.event.data.action }}"
+        attributes:
+          status_text: "{{ trigger.event.data.status_text }}"
+          # Not named "trigger": rendered attributes become variables for later ones and would shadow it
+          triggered_by: "{{ trigger.event.data.trigger }}"
+          evaluated_at: "{{ trigger.event.time_fired.isoformat() }}"
+          inputs: >
+            {% set d = trigger.event.data %}
+            {{ {'inverter_online': d.inverter_online, 'enabled': d.enabled, 'soc': d.soc,
+                'import_price': d.import_price, 'export_price': d.export_price,
+                'hysteresis': d.hysteresis, 'soc_hysteresis': d.soc_hysteresis,
+                'export_guard': d.export_guard, 'soak_target_soc': d.soak_target_soc,
+                'soak_min_soc': d.soak_min_soc, 'battery_full': d.battery_full,
+                'soak_window': d.soak_window, 'soak_done': d.soak_done,
+                'max_export_forecast': d.max_export_forecast,
+                'min_import_forecast': d.min_import_forecast, 'was_active': d.was} }}
+          targets: >
+            {% set d = trigger.event.data %}
+            {{ {'mode': d.target_mode, 'dispatch': d.target_dispatch, 'pv': d.target_pv,
+                'feed_to_grid': d.target_feed_to_grid} }}
+          rules: >
+            {%- set d = trigger.event.data -%}
+            {%- set act = d.action -%}
+            {%- set was = d.was or [] -%}
+            {%- set soc = d.soc | float(-1) -%}
+            {%- set imp = d.import_price | float(0) -%}
+            {%- set exp = d.export_price | float(0) -%}
+            {%- set h = d.hysteresis | float(0) -%}
+            {%- set sh = d.soc_hysteresis | float(0) -%}
+            {%- set guard = d.export_guard | float(10) -%}
+            {%- set names = {
+              'inverter_offline': 'Inverter Offline', 'disabled': 'Master Switch Off',
+              'neg_import': 'Negative Import', 'curtailed': 'Curtailment',
+              'holding_spike': 'Predictive Export Hold', 'solar_soak': 'Solar Soak',
+              'holding_soc_guard': 'Export SOC Guard', 'export_1': 'Export Tier 1',
+              'export_2': 'Export Tier 2', 'export_3': 'Export Tier 3',
+              'holding_import': 'Predictive Import Hold', 'import_1': 'Import Tier 1',
+              'import_2': 'Import Tier 2', 'idle': 'Idle'} -%}
+            {%- macro f(v) -%}{{ '%g' | format(v | float(0) | round(1)) }}{%- endmacro -%}
+            {#- Boolean condition: same result on entry and exit -#}
+            {%- macro flag(ns, l, ok, t, raw=true) -%}
+              {%- set ns.c = ns.c + [{'l': l, 'k': 'flag', 'e': ok, 'x': ok, 'r': raw, 't': t}] -%}
+            {%- endmacro -%}
+            {#- Threshold condition: en/ex are the entry/exit thresholds (none = not checked in that mode) -#}
+            {%- macro cmp(ns, l, v, u, op, en, opx, ex, raw=true) -%}
+              {%- set e = none if en is none else (v >= en if op == '≥' else v > en if op == '>' else v <= en if op == '≤' else v < en) -%}
+              {%- set x = none if ex is none else (v >= ex if opx == '≥' else v > ex if opx == '>' else v <= ex if opx == '≤' else v < ex) -%}
+              {%- set t = l ~ ' ' ~ f(v) ~ u
+                   ~ (' · ' ~ ('needs ' if opx is none else 'entry ') ~ op ~ ' ' ~ f(en) ~ u if en is not none else '')
+                   ~ (' · exit ' ~ opx ~ ' ' ~ f(ex) ~ u if ex is not none and (en is none or ex != en or opx != op) else '') -%}
+              {%- set ns.c = ns.c + [{'l': l, 'k': 'cmp', 'e': e, 'x': x, 'r': raw, 't': t}] -%}
+            {%- endmacro -%}
+            {#- Classify a dispatch rule from the engine's booleans; checks only explain it -#}
+            {%- macro rule(ns, key, num, on, a, r, blockers) -%}
+              {%- set w = key in was -%}
+              {%- set m = namespace(a=true, r=true, fail=[], hyst=[], met=[]) -%}
+              {%- for c in ns.c -%}
+                {%- set ok = c.x if w else c.e -%}
+                {%- if ok is not none and not ok -%}{%- set m.a = false -%}{%- set m.fail = m.fail + [c.t] -%}{%- endif -%}
+                {%- if c.r and c.e is not none and not c.e -%}{%- set m.r = false -%}{%- endif -%}
+                {%- if c.e is not none and not c.e and c.x is not false -%}{%- set m.hyst = m.hyst + [c.t] -%}{%- endif -%}
+                {%- if c.k == 'cmp' and ok -%}{%- set m.met = m.met + [c.t] -%}{%- endif -%}
+              {%- endfor -%}
+              {%- if not on -%}
+                {%- set s, sm = 'disabled', 'Switched off' -%}
+              {%- elif act == key and r -%}
+                {%- set s, sm = 'active', 'Chosen: ' ~ (m.met | join('; ') or 'all conditions met') -%}
+              {%- elif act == key -%}
+                {%- set s, sm = 'active_hysteresis', 'Chosen, held by hysteresis. Entry no longer met: ' ~ m.hyst | join('; ') -%}
+              {%- elif a and act in blockers -%}
+                {%- set s, sm = 'held', 'Met, but blocked by ' ~ names[act] -%}
+              {%- elif a -%}
+                {%- set s, sm = 'outranked', 'Met, but outranked by ' ~ names[act] -%}
+              {%- elif r -%}
+                {%- set s, sm = 'held', 'Entry met, but blocked: ' ~ m.fail | join('; ') -%}
+              {%- else -%}
+                {%- set s, sm = 'not_met', 'Not met: ' ~ m.fail | join('; ') -%}
+              {%- endif -%}
+              {%- set ns.rules = ns.rules + [{'key': key, 'n': num, 'name': names[key], 'state': s, 'mode': 'exit' if w else 'entry',
+                   'summary': sm, 'sync': m.a == a and m.r == r, 'checks': ns.c}] -%}
+              {%- set ns.c = [] -%}
+            {%- endmacro -%}
+            {#- Classify a hold or guard: armed = conditions true; 'protects' = rules it would hold back -#}
+            {%- macro hold(ns, key, num, on, a, protects) -%}
+              {%- set m = namespace(fail=[]) -%}
+              {%- for c in ns.c if not c.e -%}{%- set m.fail = m.fail + [c.t] -%}{%- endfor -%}
+              {%- set calc = m.fail | count == 0 -%}
+              {%- if not on -%}
+                {%- set s, sm = 'disabled', 'Switched off' -%}
+              {%- elif act == key -%}
+                {%- set s, sm = 'holding', 'Chosen: holding back ' ~ protects | join(', ') -%}
+              {%- elif a and protects -%}
+                {%- set s, sm = 'outranked', 'Would hold ' ~ protects | join(', ') ~ ', but outranked by ' ~ names[act] -%}
+              {%- elif a -%}
+                {%- set s, sm = 'armed', 'Armed, but no rule it guards currently meets entry' -%}
+              {%- else -%}
+                {%- set s, sm = 'not_met', 'Not active: ' ~ m.fail | join('; ') -%}
+              {%- endif -%}
+              {%- set ns.rules = ns.rules + [{'key': key, 'n': num, 'name': names[key], 'state': s, 'mode': 'entry',
+                   'summary': sm, 'sync': calc == a, 'checks': ns.c}] -%}
+              {%- set ns.c = [] -%}
+            {%- endmacro -%}
+            {%- set ns = namespace(c=[], rules=[], exp_met=[], tiers_met=[], imp_met=[]) -%}
+            {#- Rules whose entry criteria are met: what a hold or the SOC guard would hold back -#}
+            {%- for k in ['solar_soak', 'export_1', 'export_2', 'export_3'] if d[k ~ '_raw'] -%}
+              {%- set ns.exp_met = ns.exp_met + [names[k]] -%}
+              {%- if k != 'solar_soak' -%}{%- set ns.tiers_met = ns.tiers_met + [names[k]] -%}{%- endif -%}
+            {%- endfor -%}
+            {%- for k in ['import_1', 'import_2'] if d[k ~ '_raw'] -%}{%- set ns.imp_met = ns.imp_met + [names[k]] -%}{%- endfor -%}
+
+            {#- 1–2. Gates -#}
+            {%- set ns.rules = ns.rules + [
+                 {'key': 'inverter_offline', 'n': 1, 'name': 'Inverter Online', 'mode': 'entry', 'sync': true, 'checks': [],
+                  'state': 'holding' if act == 'inverter_offline' else 'pass',
+                  'summary': 'Inverter offline: engine stops here and sends no commands' if act == 'inverter_offline' else 'Inverter connected'},
+                 {'key': 'disabled', 'n': 2, 'name': 'Master Switch', 'mode': 'entry', 'sync': true, 'checks': [],
+                  'state': 'holding' if act == 'disabled' else ('pass' if d.enabled else 'outranked'),
+                  'summary': 'Master switch off: engine returns the inverter to Normal and stops' if act == 'disabled'
+                             else ('Master switch on' if d.enabled else 'Master switch off (not reached: inverter offline)')}] -%}
+
+            {#- 3. Negative import -#}
+            {%- set on = is_state('input_boolean.amber_negative_import_enabled', 'on') -%}
+            {%- set thr = states('input_number.amber_negative_import_price_threshold') | float(0) -%}
+            {{- flag(ns, 'Toggle', on, 'Negative import ' ~ ('enabled' if on else 'disabled')) -}}
+            {{- cmp(ns, 'Import price', imp, 'c', '≤', thr, '≤', thr + h) -}}
+            {{- rule(ns, 'neg_import', 3, on, d.neg_import, d.neg_import_raw, []) -}}
+
+            {#- 4. Curtailment -#}
+            {%- set on = is_state('input_boolean.amber_curtailment_enabled', 'on') -%}
+            {%- set thr = states('input_number.amber_curtailment_price_threshold') | float(0) -%}
+            {{- flag(ns, 'Toggle', on, 'Curtailment ' ~ ('enabled' if on else 'disabled')) -}}
+            {%- set ns.c = ns.c + [{'l': 'Battery full', 'k': 'flag', 'e': d.battery_full, 'x': none, 'r': true,
+                 't': 'Battery full flag ' ~ ('on' if d.battery_full else 'off') ~ ' · needed to enter only'}] -%}
+            {{- cmp(ns, 'Feed-in', exp, 'c', '≤', thr, '≤', thr + h) -}}
+            {{- rule(ns, 'curtailed', 4, on, d.curtailed, d.curtailed_raw, []) -}}
+
+            {#- 5. Predictive export hold -#}
+            {%- set on = is_state('input_boolean.amber_predictive_export_hold', 'on') -%}
+            {%- set fc = d.max_export_forecast | float(0) -%}
+            {{- flag(ns, 'Toggle', on, 'Export hold ' ~ ('enabled' if on else 'disabled')) -}}
+            {{- cmp(ns, '12h max feed-in forecast', fc, 'c', '≥', states('input_number.amber_export_forecast_threshold') | float(99), none, none) -}}
+            {{- cmp(ns, 'Forecast beats live', fc, 'c', '>', exp + h, none, none) -}}
+            {{- cmp(ns, 'Live feed-in (release)', exp, 'c', '<', states('input_number.amber_export_absolute_override') | float(99), none, none) -}}
+            {{- hold(ns, 'holding_spike', 5, on, d.pred_exp_active, ns.exp_met) -}}
+
+            {#- 6. Solar soak -#}
+            {%- set on = is_state('input_boolean.amber_solar_soak_enabled', 'on') -%}
+            {%- set tgt = d.soak_target_soc | float(20) -%}
+            {%- set floor_soc = d.soak_min_soc | float(20) -%}
+            {%- set min_p = states('input_number.amber_soak_min_pre_export_price') | float(0) -%}
+            {{- flag(ns, 'Not curtailed', not d.curtailed, 'Curtailment ' ~ ('active' if d.curtailed else 'inactive')) -}}
+            {{- flag(ns, 'No export hold', not d.pred_exp_active, 'Predictive export hold ' ~ ('armed' if d.pred_exp_active else 'inactive'), false) -}}
+            {{- flag(ns, 'Toggle', on, 'Solar soak ' ~ ('enabled' if on else 'disabled')) -}}
+            {{- flag(ns, 'Pre-export window', d.soak_window, 'Pre-export window sensor ' ~ ('on' if d.soak_window else 'off')) -}}
+            {{- flag(ns, 'Not done today', not d.soak_done, 'Soak ' ~ ('already completed today' if d.soak_done else 'not yet completed today')) -}}
+            {{- cmp(ns, 'Feed-in', exp, 'c', '≥', min_p, '≥', min_p - h) -}}
+            {{- cmp(ns, 'SOC above floor', soc, '%', '>', floor_soc, '>', floor_soc) -}}
+            {{- cmp(ns, 'SOC vs target', soc, '%', '≥', tgt + sh, '>', tgt) -}}
+            {{- rule(ns, 'solar_soak', 6, on, d.solar_soak, d.solar_soak_raw, ['holding_spike']) -}}
+
+            {#- 7. Export SOC guard -#}
+            {%- set tiers_met = ns.tiers_met -%}
+            {{- flag(ns, 'Export tier met', tiers_met | count > 0, 'Export tiers meeting entry: ' ~ (tiers_met | join(', ') or 'none')) -}}
+            {{- cmp(ns, 'SOC at/below guard', soc, '%', '≤', guard, none, none) -}}
+            {{- hold(ns, 'holding_soc_guard', 7, true, tiers_met | count > 0 and soc <= guard, tiers_met if soc <= guard else []) -}}
+
+            {#- 8–10. Export tiers -#}
+            {%- for i in [1, 2, 3] -%}
+              {%- set on = is_state('input_boolean.amber_export_tier_' ~ i ~ '_enabled', 'on') -%}
+              {%- set t_soc = states('input_number.amber_export_soc_' ~ i) | float(100) -%}
+              {%- set t_p = states('input_number.amber_export_price_' ~ i) | float(99) -%}
+              {{- flag(ns, 'Not curtailed', not d.curtailed, 'Curtailment ' ~ ('active' if d.curtailed else 'inactive')) -}}
+              {{- flag(ns, 'No export hold', not d.pred_exp_active, 'Predictive export hold ' ~ ('armed' if d.pred_exp_active else 'inactive'), false) -}}
+              {{- flag(ns, 'Toggle', on, 'Tier ' ~ i ~ (' enabled' if on else ' disabled')) -}}
+              {{- cmp(ns, 'SOC', soc, '%', '≥', t_soc, '≥', t_soc - sh) -}}
+              {{- cmp(ns, 'Feed-in', exp, 'c', '≥', t_p, '≥', t_p - h) -}}
+              {{- cmp(ns, 'SOC above guard', soc, '%', '>', none, '>', guard, false) -}}
+              {{- rule(ns, 'export_' ~ i, 7 + i, on, d['export_' ~ i], d['export_' ~ i ~ '_raw'], ['holding_spike', 'holding_soc_guard']) -}}
+            {%- endfor -%}
+
+            {#- 11. Predictive import hold -#}
+            {%- set on = is_state('input_boolean.amber_predictive_import_hold', 'on') -%}
+            {%- set fc = d.min_import_forecast | float(0) -%}
+            {{- flag(ns, 'Toggle', on, 'Import hold ' ~ ('enabled' if on else 'disabled')) -}}
+            {{- cmp(ns, '12h min import forecast', fc, 'c', '≤', states('input_number.amber_import_forecast_threshold') | float(-99), none, none) -}}
+            {{- cmp(ns, 'Forecast beats live', fc, 'c', '<', imp - h, none, none) -}}
+            {{- cmp(ns, 'Live import (release)', imp, 'c', '>', states('input_number.amber_import_absolute_override') | float(-99), none, none) -}}
+            {{- hold(ns, 'holding_import', 11, on, d.pred_imp_active, ns.imp_met) -}}
+
+            {#- 12–13. Import tiers -#}
+            {%- for i in [1, 2] -%}
+              {%- set on = is_state('input_boolean.amber_import_tier_' ~ i ~ '_enabled', 'on') -%}
+              {%- set t_soc = states('input_number.amber_import_soc_' ~ i) | float(0) -%}
+              {%- set t_p = states('input_number.amber_import_price_' ~ i) | float(-99) -%}
+              {{- flag(ns, 'No import hold', not d.pred_imp_active, 'Predictive import hold ' ~ ('armed' if d.pred_imp_active else 'inactive'), false) -}}
+              {{- flag(ns, 'Toggle', on, 'Tier ' ~ i ~ (' enabled' if on else ' disabled')) -}}
+              {{- flag(ns, 'SOC in range', soc >= 0 and soc < 98, 'SOC ' ~ f(soc) ~ '% · must be 0–98%') -}}
+              {{- cmp(ns, 'SOC', soc, '%', '≤', t_soc, '≤', t_soc + sh) -}}
+              {{- cmp(ns, 'Import price', imp, 'c', '≤', t_p, '≤', t_p + h) -}}
+              {{- rule(ns, 'import_' ~ i, 11 + i, on, d['import_' ~ i], d['import_' ~ i ~ '_raw'], ['holding_import']) -}}
+            {%- endfor -%}
+            {{- ns.rules -}}
 
 # ---------------------------------------------------------------------------
 # INPUT NUMBERS — Price, SOC & Solar Soak thresholds
@@ -1107,6 +1343,17 @@ automation:
                and soc <= states('input_number.amber_import_soc_2')|float(0)
                and import_price <= states('input_number.amber_import_price_2')|float(-99) }}
 
+          # Entry-only criteria for the two hysteresis rules above; published for diagnostics only
+          # (shows when negative import or curtailment is held by its exit hysteresis).
+          neg_import_raw: >
+            {{ is_state('input_boolean.amber_negative_import_enabled', 'on')
+               and import_price <= states('input_number.amber_negative_import_price_threshold')|float(0) }}
+
+          curtailment_raw: >
+            {{ is_state('input_boolean.amber_curtailment_enabled', 'on')
+               and is_state('sensor.alphaess_battery_full', ['true', 'True', 'on'])
+               and export_price <= states('input_number.amber_curtailment_price_threshold')|float(0.00) }}
+
           # 7. Determine the single active action (in priority order).
           # Export tiers need no extra SOC guard here: an active tier checks the guard itself, and a
           # fresh entry at or below the guard is caught by holding_soc_guard first.
@@ -1153,6 +1400,60 @@ automation:
             {%- else -%} Normal Mode (5) {%- endif -%}
           mode_ok: "{{ is_state('input_select.alphaess_helper_dispatch_mode', target_mode) }}"
           target_feed_to_grid: "{{ 0 if active_action == 'curtailed' else 100 }}"
+
+      # --- PUBLISH DECISION ---
+      # Snapshot of this run's inputs and rule results, captured by sensor.amber_engine_decision so
+      # the dashboards show the engine's own decision rather than recomputing it. Fires before the
+      # early exit so disabled runs are published too. Keep in step with the rule variables above.
+      - event: amber_engine_evaluated
+        event_data:
+          action: "{{ active_action }}"
+          status_text: "{{ new_status_text }}"
+          trigger: "{{ trigger.description | default('manual run') }}"
+          # Rules that were active before this run, i.e. evaluated against their exit thresholds
+          was: >
+            {{ {'neg_import': currently_neg_import, 'curtailed': currently_curtailed,
+                'solar_soak': currently_soaking, 'export_1': currently_exporting_t1,
+                'export_2': currently_exporting_t2, 'export_3': currently_exporting_t3,
+                'import_1': currently_importing_t1, 'import_2': currently_importing_t2}.items()
+               | selectattr(1) | map(attribute=0) | list }}
+          inverter_online: "{{ inverter_online }}"
+          enabled: "{{ enabled }}"
+          soc: "{{ soc }}"
+          import_price: "{{ import_price | round(2) }}"
+          export_price: "{{ export_price | round(2) }}"
+          hysteresis: "{{ hysteresis }}"
+          soc_hysteresis: "{{ soc_hysteresis }}"
+          export_guard: "{{ export_guard }}"
+          soak_target_soc: "{{ soak_target_soc }}"
+          soak_min_soc: "{{ soak_min_soc }}"
+          battery_full: "{{ is_state('sensor.alphaess_battery_full', ['true', 'True', 'on']) }}"
+          soak_window: "{{ is_state('sensor.amber_negative_export_forecast_12h', 'on') }}"
+          soak_done: "{{ is_state('input_boolean.amber_solar_soak_completed_today', 'on') }}"
+          max_export_forecast: "{{ states('sensor.amber_max_export_forecast_12h') | float(0) }}"
+          min_import_forecast: "{{ states('sensor.amber_min_import_forecast_12h') | float(0) }}"
+          pred_exp_active: "{{ pred_exp_active }}"
+          pred_imp_active: "{{ pred_imp_active }}"
+          neg_import: "{{ neg_import_active }}"
+          neg_import_raw: "{{ neg_import_raw }}"
+          curtailed: "{{ curtailment_active }}"
+          curtailed_raw: "{{ curtailment_raw }}"
+          solar_soak: "{{ soak_exp_active }}"
+          solar_soak_raw: "{{ soak_exp_raw }}"
+          export_1: "{{ t1_exp }}"
+          export_1_raw: "{{ t1_exp_raw }}"
+          export_2: "{{ t2_exp }}"
+          export_2_raw: "{{ t2_exp_raw }}"
+          export_3: "{{ t3_exp }}"
+          export_3_raw: "{{ t3_exp_raw }}"
+          import_1: "{{ t1_imp }}"
+          import_1_raw: "{{ t1_imp_raw }}"
+          import_2: "{{ t2_imp }}"
+          import_2_raw: "{{ t2_imp_raw }}"
+          target_mode: "{{ target_mode }}"
+          target_dispatch: "{{ 'off' if target_mode == 'Normal Mode (5)' else 'on' }}"
+          target_pv: "{{ 'off' if active_action == 'neg_import' else 'on' }}"
+          target_feed_to_grid: "{{ target_feed_to_grid }}"
 
       # Early exit when already disabled: prevents the automation from interfering with manual
       # dispatch modes while the master switch is off. On the FIRST trigger after disabling,

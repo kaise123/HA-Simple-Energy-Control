@@ -1,19 +1,176 @@
 title: HA Simple Energy Control - Diagnostics & Simulator
 views:
   # =========================================================================
-  # VIEW 1: ENGINE DIAGNOSTICS & DECISION INSPECTOR
+  # VIEW 1: ENGINE DIAGNOSTICS
+  # Everything here is read from sensor.amber_engine_decision, which the engine
+  # publishes on every run. Nothing re-implements the decision logic, so this
+  # view always shows what the engine actually decided and why.
   # =========================================================================
   - title: Engine Diagnostics
+    path: engine
     icon: mdi:bug-outline
-    cards:
-      # --- LIVE SYSTEM STATUS & QUICK TRIGGER ---
-      - type: vertical-stack
+    type: sections
+    max_columns: 3
+    sections:
+      # --- DECISION, HEALTH CHECKS & RULE WALK-THROUGH ---
+      - type: grid
+        column_span: 2
         cards:
+          - type: heading
+            heading: Engine Decision
+            icon: mdi:state-machine
+            badges:
+              - type: entity
+                entity: sensor.amber_engine_decision
+                show_state: true
+                state_content: last_updated
+
+          # Current decision, why, and whether reality matches it
           - type: markdown
-            content: >
-              ### ⚙️ Engine State & Live Operational Status
-              
-              Displays the real-time operational state of the automation state machine and active AlphaESS inverter Modbus dispatch commands.
+            # Full width: this section spans two columns, so cards default to half of it
+            grid_options:
+              columns: full
+            content: |
+              {%- set s = 'sensor.amber_engine_decision' -%}
+              {%- set rules = state_attr(s, 'rules') or [] -%}
+              {%- if not rules -%}
+              <ha-alert alert-type="info">No engine run recorded yet. Press <b>Re-evaluate Logic Now</b> to publish the first decision.</ha-alert>
+              {%- else -%}
+              {%- set icons = {'active': '🟢', 'active_hysteresis': '🟡', 'outranked': '🔵', 'held': '🟠', 'not_met': '⚪',
+                               'disabled': '⚫', 'armed': '🟣', 'holding': '🛑', 'pass': '✅'} -%}
+              {%- set inp = state_attr(s, 'inputs') or {} -%}
+              {%- set tgt = state_attr(s, 'targets') or {} -%}
+              {%- set ev = as_datetime(state_attr(s, 'evaluated_at')) -%}
+              {%- set age = (now() - ev).total_seconds() | int(0) if ev else 0 -%}
+              {%- set win = rules | selectattr('state', 'in', ['active', 'active_hysteresis', 'holding']) | list -%}
+              {%- set win = win | last if win else none -%}
+              ## {{ state_attr(s, 'status_text') }}
+
+              {% if win -%}
+              {{ icons[win.state] }} **{{ win.name }}:** {{ win.summary }}
+              {%- else -%}
+              ⚪ **Idle:** no rule met its conditions, so the inverter stays in Normal Mode (5).
+              {%- endif %}
+
+              <small>Evaluated {{ ev | as_local | as_timestamp | timestamp_custom('%H:%M:%S') if ev else '?' }} ({{ (age // 60) ~ ' min ' if age >= 60 else '' }}{{ age % 60 }} s ago) · trigger: <i>{{ state_attr(s, 'triggered_by') }}</i> · SOC {{ inp.soc }}% · import {{ inp.import_price }}c · feed-in {{ inp.export_price }}c</small>
+
+              {# Health checks -#}
+              {%- set ns = namespace(alerts=[]) -%}
+              {%- if age > 960 -%}
+                {%- set ns.alerts = ns.alerts + ['warning|<b>Stale decision.</b> The engine last ran ' ~ (age // 60) ~ ' min ago; the 15-minute keep-alive should have refreshed it. Check the automation is on and its last trace.'] -%}
+              {%- endif -%}
+              {%- for e, label in [('sensor.alphaess_soc_battery', 'Battery SOC'), ('sensor.amber_express_home_general_price', 'Import price'), ('sensor.amber_express_home_feed_in_price', 'Feed-in price')] -%}
+                {%- set st = states[e] -%}
+                {%- if ev and st and st.last_changed > ev and (now() - st.last_changed).total_seconds() > 30 -%}
+                  {%- set ns.alerts = ns.alerts + ['warning|<b>' ~ label ~ ' changed after the last run</b> (' ~ st.state ~ ' at ' ~ st.last_changed | as_local | as_timestamp | timestamp_custom('%H:%M:%S') ~ ') and the engine has not re-evaluated. Values below may be out of date.'] -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {%- if states('input_text.amber_active_tier_status') != state_attr(s, 'status_text') and states(s) != 'disabled' -%}
+                {%- set ns.alerts = ns.alerts + ['error|<b>Status mismatch.</b> The status helper says “' ~ states('input_text.amber_active_tier_status') ~ '” but the engine last decided “' ~ state_attr(s, 'status_text') ~ '”.'] -%}
+              {%- endif -%}
+              {%- set bad = rules | rejectattr('sync') | map(attribute='name') | list -%}
+              {%- if bad -%}
+                {%- set ns.alerts = ns.alerts + ['error|<b>Explanation disagrees with the engine</b> for: ' ~ bad | join(', ') ~ '. The rule states below come from the engine and are correct; the condition lists for these rules need updating in the package.'] -%}
+              {%- endif -%}
+              {%- for a in ns.alerts %}
+              <ha-alert alert-type="{{ a.split('|')[0] }}">{{ a.split('|', 1)[1] }}</ha-alert>
+              {%- endfor %}
+
+              {#- Inverter helpers vs engine targets -#}
+              {%- if states(s) in ['inverter_offline', 'disabled'] %}
+
+              <small>Inverter helpers are not compared while {{ 'the inverter is offline' if states(s) == 'inverter_offline' else 'the master switch is off (manual control)' }}.</small>
+              {%- else -%}
+              {%- set feed = states('input_number.alphaess_helper_max_feed_to_grid') | float(-1) -%}
+              {%- set hw = [
+                   ('Dispatch mode', tgt.mode, states('input_select.alphaess_helper_dispatch_mode')),
+                   ('Force dispatch', tgt.dispatch, states('input_boolean.alphaess_helper_dispatch')),
+                   ('PV switch', tgt.pv, states('input_boolean.alphaess_helper_dispatch_pv_switch')),
+                   ('Max feed-to-grid', tgt.feed_to_grid | string, feed | int | string if feed >= 0 else 'unavailable')] %}
+
+              | Inverter helper | Engine wants | Actual | |
+              |---|---|---|:-:|
+              {% for label, want, have in hw -%}
+              | {{ label }} | {{ want }} | {{ have }} | {{ '✅' if want == have else '❌' }} |
+              {% endfor -%}
+              {%- endif -%}
+              {%- endif -%}
+
+          # At-a-glance rule matrix in priority order
+          - type: markdown
+            grid_options:
+              columns: full
+            content: |
+              {%- set rules = state_attr('sensor.amber_engine_decision', 'rules') or [] -%}
+              {%- set icons = {'active': '🟢', 'active_hysteresis': '🟡', 'outranked': '🔵', 'held': '🟠', 'not_met': '⚪',
+                               'disabled': '⚫', 'armed': '🟣', 'holding': '🛑', 'pass': '✅'} -%}
+              {%- set labels = {'active': 'Chosen', 'active_hysteresis': 'Chosen (hysteresis)', 'outranked': 'Met, outranked',
+                                'held': 'Blocked', 'not_met': 'Not met', 'disabled': 'Off', 'armed': 'Armed',
+                                'holding': 'Chosen (stops here)', 'pass': 'Pass'} -%}
+              ### 📜 Priority walk-through
+
+              The engine checks these top to bottom and acts on the first rule that is chosen. Rows below the chosen one are still evaluated so you can see what else was met.
+
+              | | # | Rule | Result | Why |
+              |:-:|:-:|---|---|---|
+              {% for r in rules -%}
+              {% set nm = r.name | replace(' ', '&nbsp;') -%}
+              | {{ icons[r.state] }} | {{ r.n }} | {{ '**' ~ nm ~ '**' if r.state in ['active', 'active_hysteresis', 'holding'] else nm }} | {{ labels[r.state] | replace(' ', '&nbsp;') }}{{ ' ⚠️' if not r.sync else '' }} | {{ r.summary }} |
+              {% endfor %}
+
+              <small>🟢 chosen · 🟡 chosen, held only by exit hysteresis · 🔵 met but a higher rule won · 🟠 entry met but blocked by a hold or guard · ⚪ conditions not met · ⚫ switched off · 🟣 hold armed, nothing to hold · 🛑 gate or hold chosen · ✅ gate passed</small>
+
+          # Per-rule condition breakdown
+          - type: markdown
+            grid_options:
+              columns: full
+            content: |
+              {%- set rules = state_attr('sensor.amber_engine_decision', 'rules') or [] -%}
+              {%- set icons = {'active': '🟢', 'active_hysteresis': '🟡', 'outranked': '🔵', 'held': '🟠', 'not_met': '⚪',
+                               'disabled': '⚫', 'armed': '🟣', 'holding': '🛑', 'pass': '✅'} -%}
+              ### 🔍 Why each rule was or wasn't met
+
+              Expand a rule to see every condition the engine checked. A rule that was already active is judged against its **exit** thresholds (entry minus the hysteresis buffer); otherwise its **entry** thresholds apply. ✅ passed · ❌ failed · ➖ not checked in this mode.
+              {% for r in rules if r.checks %}
+              <details><summary>{{ icons[r.state] }} <b>{{ r.n }}. {{ r.name }}</b> · {{ r.summary }}</summary>
+
+              <i>Judged on {{ r.mode }} thresholds{{ ' (rule was active before this run)' if r.mode == 'exit' else '' }}.</i>{{ ' ⚠️ <b>Explanation disagrees with the engine.</b>' if not r.sync else '' }}
+
+              {% for c in r.checks -%}
+              {%- set used = c.x if r.mode == 'exit' else c.e -%}
+              - {{ '➖' if used is none else ('✅' if used else '❌') }} {{ c.t }}{{ ' · <i>entry ' ~ ('✅' if c.e else '❌') ~ ', exit ' ~ ('✅' if c.x else '❌') ~ '</i>' if c.e is not none and c.x is not none and c.e != c.x else '' }}
+              {% endfor %}
+              </details>
+              {% endfor %}
+
+      # --- LIVE HELPERS & ENGINE CONTROLS ---
+      - type: grid
+        cards:
+          - type: heading
+            heading: Live Helpers & Controls
+            icon: mdi:tune
+          - type: button
+            name: Re-evaluate Logic Now
+            icon: mdi:play-circle-outline
+            grid_options:
+              columns: 6
+            tap_action:
+              action: perform-action
+              perform_action: automation.trigger
+              target:
+                entity_id: automation.amber_energy_dispatch_optimization_tiered
+          - type: button
+            name: Reset Inverter (Mode 5)
+            icon: mdi:restore
+            grid_options:
+              columns: 6
+            tap_action:
+              action: perform-action
+              perform_action: input_button.press
+              target:
+                entity_id: input_button.alphaess_helper_dispatch_reset_full
+              confirmation:
+                text: Send a full dispatch reset to the inverter? The engine re-applies its decision on its next run.
           - type: entities
             entities:
               - entity: input_boolean.amber_automation_enabled
@@ -21,20 +178,25 @@ views:
               - entity: binary_sensor.alphaess_inverter_connected
                 name: Inverter Communication
               - entity: input_text.amber_active_tier_status
-                name: Current System Status
+                name: Status Helper
                 icon: mdi:information-outline
+              - entity: sensor.amber_engine_decision
+                name: Engine Decision (active_action)
+                secondary_info: last-updated
+              - type: section
+                label: AlphaESS dispatch helpers
               - entity: input_select.alphaess_helper_dispatch_mode
-                name: Active Inverter Modbus Mode
+                name: Dispatch Mode
               - entity: input_boolean.alphaess_helper_dispatch
-                name: Force Dispatch Trigger Active
+                name: Force Dispatch Active
               - entity: input_number.alphaess_helper_dispatch_duration
-                name: Active Dispatch Duration (min)
-              - entity: input_boolean.alphaess_helper_dispatch_pv_switch
-                name: PV Switch Helper (Negative Import Cutoff)
-              - entity: input_number.alphaess_helper_max_feed_to_grid
-                name: Grid Feed-In Limit (Curtailment)
+                name: Dispatch Duration (min)
               - entity: timer.alphaess_helper_dispatch_timer
-                name: Dispatch Timer (keep-alive refresh due at 50 min)
+                name: Dispatch Timer (keep-alive due at 50 min)
+              - entity: input_boolean.alphaess_helper_dispatch_pv_switch
+                name: PV Switch (off during negative import)
+              - entity: input_number.alphaess_helper_max_feed_to_grid
+                name: Max Feed-to-Grid (0 while curtailed)
               - type: section
                 label: Automations (last triggered)
               - entity: automation.amber_energy_dispatch_optimization_tiered
@@ -46,259 +208,82 @@ views:
               - entity: automation.amber_house_load_tariff_switch
                 name: House Load Tariff Switch
                 secondary_info: last-triggered
-          - type: horizontal-stack
-            cards:
-              - type: button
-                name: Re-evaluate Logic Now
-                icon: mdi:play-circle-outline
-                tap_action:
-                  action: call-service
-                  service: automation.trigger
-                  target:
-                    entity_id: automation.amber_energy_dispatch_optimization_tiered
-              - type: button
-                name: Reset Inverter (Mode 5)
-                icon: mdi:restore
-                tap_action:
-                  action: call-service
-                  service: input_button.press
-                  target:
-                    entity_id: input_button.alphaess_helper_dispatch_reset_full
-
-      # --- REAL-TIME DECISION TREE & "WHY WAS THIS CHOICE MADE?" INSPECTOR ---
-      - type: vertical-stack
-        cards:
-          - type: markdown
-            content: >
-              ### 🔍 Real-Time Automation Logic & Decision Inspector
-              
-              Evaluates the automation's decision tree in strict priority order using live sensor values and explains why the current action was selected.
-              
-              {% set inverter_online = is_state('binary_sensor.alphaess_inverter_connected', 'on') %}
-              {% set soc = states('sensor.alphaess_soc_battery') | float(-1) if inverter_online else -1 %}
-              {% set imp_price = (states('sensor.amber_express_home_general_price') | float(0)) * 100 %}
-              {% set exp_price = (states('sensor.amber_express_home_feed_in_price') | float(0)) * 100 %}
-              {% set current_status = states('input_text.amber_active_tier_status') %}
-              {% set hysteresis = states('input_number.amber_price_hysteresis') | float(0) %}
-              {% set soc_hysteresis = states('input_number.amber_soc_hysteresis') | float(0) %}
-              {% set enabled = is_state('input_boolean.amber_automation_enabled', 'on') %}
-              
-              {% set curtailment_thresh = states('input_number.amber_curtailment_price_threshold') | float(0.00) %}
-              {% set currently_curtailed = 'Solar Curtailed' in current_status %}
-              {% set curtailment_active = enabled and inverter_online and is_state('input_boolean.amber_curtailment_enabled', 'on') and ((currently_curtailed and exp_price <= (curtailment_thresh + hysteresis)) or (is_state('sensor.alphaess_battery_full', ['true', 'True', 'on']) and exp_price <= curtailment_thresh)) %}
-              
-              {% set pred_exp_thresh = states('input_number.amber_export_forecast_threshold') | float(99) %}
-              {% set pred_exp_override = states('input_number.amber_export_absolute_override') | float(99) %}
-              {% set max_exp_12h = states('sensor.amber_max_export_forecast_12h') | float(0) %}
-              {% set pred_exp_active = enabled and inverter_online and is_state('input_boolean.amber_predictive_export_hold', 'on') and max_exp_12h >= pred_exp_thresh and max_exp_12h > exp_price + hysteresis and exp_price < pred_exp_override %}
-              
-              {% set pred_imp_thresh = states('input_number.amber_import_forecast_threshold') | float(-99) %}
-              {% set pred_imp_override = states('input_number.amber_import_absolute_override') | float(-99) %}
-              {% set min_imp_12h = states('sensor.amber_min_import_forecast_12h') | float(0) %}
-              {% set pred_imp_active = enabled and inverter_online and is_state('input_boolean.amber_predictive_import_hold', 'on') and min_imp_12h <= pred_imp_thresh and min_imp_12h < imp_price - hysteresis and imp_price > pred_imp_override %}
-              
-              {% set neg_import_thresh = states('input_number.amber_negative_import_price_threshold') | float(0) %}
-              {% set currently_neg_import = 'Grid Drawing' in current_status %}
-              {% set neg_import_active = enabled and inverter_online and is_state('input_boolean.amber_negative_import_enabled', 'on') and (((currently_neg_import and imp_price <= (neg_import_thresh + hysteresis))) or (not currently_neg_import and imp_price <= neg_import_thresh)) %}
-              
-              {% set soak_target_soc = states('sensor.amber_solar_soak_target_soc') | float(20) %}
-              {% set soak_min_soc = states('input_number.amber_soak_min_soc') | float(20) %}
-              {% set soak_min_price = states('input_number.amber_soak_min_pre_export_price') | float(0.00) %}
-              {% set neg_forecast_on = is_state('sensor.amber_negative_export_forecast_12h', 'on') %}
-              {% set currently_soaking = 'Solar Soak' in current_status %}
-              {% set completed_today = is_state('input_boolean.amber_solar_soak_completed_today', 'on') %}
-              {% set soak_exp_active = enabled and inverter_online and not curtailment_active and not pred_exp_active and is_state('input_boolean.amber_solar_soak_enabled', 'on') and not completed_today and neg_forecast_on and exp_price >= (soak_min_price - (hysteresis if currently_soaking else 0)) and (((currently_soaking and soc > soak_target_soc and soc > soak_min_soc)) or (not currently_soaking and soc >= (soak_target_soc + soc_hysteresis) and soc > soak_min_soc)) %}
-              
-              {% set currently_t1_exp = 'Exporting (Tier 1)' in current_status %}
-              {% set t1_exp_soc = states('input_number.amber_export_soc_1') | float(100) %}
-              {% set t1_exp_price = states('input_number.amber_export_price_1') | float(99) %}
-              {% set t1_exp = enabled and inverter_online and not curtailment_active and not pred_exp_active and is_state('input_boolean.amber_export_tier_1_enabled', 'on') and (((currently_t1_exp and soc > states('input_number.amber_export_min_soc_guard') | float(10) and soc >= (t1_exp_soc - soc_hysteresis) and exp_price >= (t1_exp_price - hysteresis))) or (not currently_t1_exp and soc >= t1_exp_soc and exp_price >= t1_exp_price)) %}
-              
-              {% set currently_t2_exp = 'Exporting (Tier 2)' in current_status %}
-              {% set t2_exp_soc = states('input_number.amber_export_soc_2') | float(100) %}
-              {% set t2_exp_price = states('input_number.amber_export_price_2') | float(99) %}
-              {% set t2_exp = enabled and inverter_online and not curtailment_active and not pred_exp_active and is_state('input_boolean.amber_export_tier_2_enabled', 'on') and (((currently_t2_exp and soc > states('input_number.amber_export_min_soc_guard') | float(10) and soc >= (t2_exp_soc - soc_hysteresis) and exp_price >= (t2_exp_price - hysteresis))) or (not currently_t2_exp and soc >= t2_exp_soc and exp_price >= t2_exp_price)) %}
-              
-              {% set currently_t3_exp = 'Exporting (Tier 3)' in current_status %}
-              {% set t3_exp_soc = states('input_number.amber_export_soc_3') | float(100) %}
-              {% set t3_exp_price = states('input_number.amber_export_price_3') | float(99) %}
-              {% set t3_exp = enabled and inverter_online and not curtailment_active and not pred_exp_active and is_state('input_boolean.amber_export_tier_3_enabled', 'on') and (((currently_t3_exp and soc > states('input_number.amber_export_min_soc_guard') | float(10) and soc >= (t3_exp_soc - soc_hysteresis) and exp_price >= (t3_exp_price - hysteresis))) or (not currently_t3_exp and soc >= t3_exp_soc and exp_price >= t3_exp_price)) %}
-              
-              {% set currently_t1_imp = 'Importing (Tier 1)' in current_status %}
-              {% set t1_imp_soc = states('input_number.amber_import_soc_1') | float(0) %}
-              {% set t1_imp_price = states('input_number.amber_import_price_1') | float(-99) %}
-              {% set t1_imp = enabled and inverter_online and not pred_imp_active and is_state('input_boolean.amber_import_tier_1_enabled', 'on') and soc >= 0 and soc < 98 and (((currently_t1_imp and soc <= (t1_imp_soc + soc_hysteresis) and imp_price <= (t1_imp_price + hysteresis))) or (not currently_t1_imp and soc <= t1_imp_soc and imp_price <= t1_imp_price)) %}
-              
-              {% set currently_t2_imp = 'Importing (Tier 2)' in current_status %}
-              {% set t2_imp_soc = states('input_number.amber_import_soc_2') | float(0) %}
-              {% set t2_imp_price = states('input_number.amber_import_price_2') | float(-99) %}
-              {% set t2_imp = enabled and inverter_online and not pred_imp_active and is_state('input_boolean.amber_import_tier_2_enabled', 'on') and soc >= 0 and soc < 98 and (((currently_t2_imp and soc <= (t2_imp_soc + soc_hysteresis) and imp_price <= (t2_imp_price + hysteresis))) or (not currently_t2_imp and soc <= t2_imp_soc and imp_price <= t2_imp_price)) %}
-              
-              {% set soak_exp_raw = enabled and inverter_online and not curtailment_active and is_state('input_boolean.amber_solar_soak_enabled', 'on') and not completed_today and neg_forecast_on and exp_price >= soak_min_price and soc >= (soak_target_soc + soc_hysteresis) and soc > soak_min_soc %}
-              {% set t1_exp_raw = enabled and inverter_online and not curtailment_active and is_state('input_boolean.amber_export_tier_1_enabled', 'on') and soc >= t1_exp_soc and exp_price >= t1_exp_price %}
-              {% set t2_exp_raw = enabled and inverter_online and not curtailment_active and is_state('input_boolean.amber_export_tier_2_enabled', 'on') and soc >= t2_exp_soc and exp_price >= t2_exp_price %}
-              {% set t3_exp_raw = enabled and inverter_online and not curtailment_active and is_state('input_boolean.amber_export_tier_3_enabled', 'on') and soc >= t3_exp_soc and exp_price >= t3_exp_price %}
-              {% set t1_imp_raw = enabled and inverter_online and is_state('input_boolean.amber_import_tier_1_enabled', 'on') and soc >= 0 and soc < 98 and soc <= t1_imp_soc and imp_price <= t1_imp_price %}
-              {% set t2_imp_raw = enabled and inverter_online and is_state('input_boolean.amber_import_tier_2_enabled', 'on') and soc >= 0 and soc < 98 and soc <= t2_imp_soc and imp_price <= t2_imp_price %}
-              
-              {% set hold_exp_active = (soak_exp_raw or t1_exp_raw or t2_exp_raw or t3_exp_raw) and pred_exp_active %}
-              {% set exp_guard_active = (t1_exp_raw or t2_exp_raw or t3_exp_raw) and soc <= states('input_number.amber_export_min_soc_guard') | float(10) %}
-              {% set hold_imp_active = (t1_imp_raw or t2_imp_raw) and pred_imp_active %}
-              
-              ---
-              
-              **🎯 Active Decision & Reason:**
-              
-              {% if not inverter_online %}
-              ⚠️ **INVERTER OFFLINE (MODBUS ERROR):** Communication with the AlphaESS inverter is currently unavailable. All automated dispatches, grid charging, and curtailment commands are paused to prevent erroneous actions.
-              {% elif not enabled %}
-              🔴 **AUTOMATION DISABLED:** Master switch is OFF. The system is in manual self-consumption mode.
-              {% elif neg_import_active %}
-              📥 **GRID DRAWING (NEGATIVE IMPORT PRICE):** Import price is **{{ imp_price | round(1) }}c/kWh** which is at or below **{{ neg_import_thresh | round(1) }}c/kWh**! PV has been disabled and inverter is commanded to Mode 7 (Maximise Consumption) to draw purely from the grid.
-              {% elif curtailment_active %}
-              🛑 **CURTAILMENT ACTIVE:** Live feed-in price is **{{ exp_price | round(1) }}c/kWh**, which is at or below your threshold of **{{ curtailment_thresh | round(1) }}c/kWh**. All grid exports are blocked to protect against paying export tariffs. Inverter commanded to Mode 5.
-              {% elif hold_exp_active %}
-              🛑 **PREDICTIVE EXPORT HOLD ACTIVE:** Amber forecasts a massive future spike of **{{ max_exp_12h | round(1) }}c/kWh** in the next 12h (threshold: **{{ pred_exp_thresh | round(1) }}c/kWh**). Current exports are paused to preserve battery capacity until the spike occurs or live price crosses **{{ pred_exp_override | round(1) }}c/kWh**.
-              {% elif soak_exp_active %}
-              ☀️ **SOLAR SOAK PRE-EXPORT ACTIVE:** Solcast forecasts excess midday solar yield and Amber forecasts negative feed-in prices. Pre-discharging battery from **{{ soc }}%** down to **{{ soak_target_soc | int(20) }}% Target SoC** (min floor: **{{ soak_min_soc }}%**) at **{{ exp_price | round(1) }}c/kWh** to create capacity for midday solar. Inverter commanded to Mode 4.
-              {% elif exp_guard_active %}
-              🛑 **EXPORT SOC GUARD BLOCKED:** Export conditions met, but current battery SOC (**{{ soc }}%**) is at or below the Emergency Export Guard (**{{ states('input_number.amber_export_min_soc_guard') }}%**). Inverter protected in Mode 5.
-              {% elif t1_exp and soc > states('input_number.amber_export_min_soc_guard') | float(10) %}
-              📤 **EXPORTING (TIER 1):** Feed-in price (**{{ exp_price | round(1) }}c/kWh**) is at or above **{{ t1_exp_price | round(1) }}c/kWh** and Battery SOC (**{{ soc }}%**) is at or above **{{ t1_exp_soc }}%**. Inverter commanded to Mode 4 (Maximise Output).
-              {% elif t2_exp and soc > states('input_number.amber_export_min_soc_guard') | float(10) %}
-              📤 **EXPORTING (TIER 2):** Feed-in price (**{{ exp_price | round(1) }}c/kWh**) is at or above **{{ t2_exp_price | round(1) }}c/kWh** and Battery SOC (**{{ soc }}%**) is at or above **{{ t2_exp_soc }}%**. Inverter commanded to Mode 4 (Maximise Output).
-              {% elif t3_exp and soc > states('input_number.amber_export_min_soc_guard') | float(10) %}
-              📤 **EXPORTING (TIER 3):** Feed-in price (**{{ exp_price | round(1) }}c/kWh**) is at or above **{{ t3_exp_price | round(1) }}c/kWh** and Battery SOC (**{{ soc }}%**) is at or above **{{ t3_exp_soc }}%**. Inverter commanded to Mode 4 (Maximise Output).
-              {% elif hold_imp_active %}
-              🛑 **PREDICTIVE IMPORT HOLD ACTIVE:** Amber forecasts a future price drop down to **{{ min_imp_12h | round(1) }}c/kWh** in the next 12h (threshold: **{{ pred_imp_thresh | round(1) }}c/kWh**). Grid charging is paused to wait for the cheaper tariff window.
-              {% elif t1_imp %}
-              📥 **IMPORTING (TIER 1):** General import price (**{{ imp_price | round(1) }}c/kWh**) is at or below **{{ t1_imp_price | round(1) }}c/kWh** and Battery SOC (**{{ soc }}%**) is at or below **{{ t1_imp_soc }}%**. Inverter commanded to Mode 6 (Optimise Consumption).
-              {% elif t2_imp %}
-              📥 **IMPORTING (TIER 2):** General import price (**{{ imp_price | round(1) }}c/kWh**) is at or below **{{ t2_imp_price | round(1) }}c/kWh** and Battery SOC (**{{ soc }}%**) is at or below **{{ t2_imp_soc }}%**. Inverter commanded to Mode 6 (Optimise Consumption).
-              {% else %}
-              🟢 **IDLE (NORMAL MODE):** No export, import, or soak thresholds are currently matched. The inverter operates in standard self-consumption (Mode 5).
-              {% endif %}
-              
-              ---
-              
-              ### 📜 Priority Evaluation Hierarchy
-              
-              * **1. Inverter Communication Health**
-                * *Status:* {% if inverter_online %}✅ ONLINE{% else %}⚠️ **OFFLINE / MODBUS ERROR**{% endif %}
-                * *Values:* Inverter Connection: {{ 'Connected' if inverter_online else 'Disconnected / Unavailable' }}
-              * **2. Master Automation Switch**
-                * *Status:* {% if enabled %}✅ ON{% else %}❌ OFF{% endif %}
-                * *Values:* Switch: {{ 'Enabled' if enabled else 'Disabled' }}
-              * **3. Negative Import Price**
-                * *Status:* {% if neg_import_active %}📥 **TRIGGERED**{% else %}⚪ False{% endif %}
-                * *Values:* Live Import: {{ imp_price | round(1) }}c/kWh (Triggers if at or below {{ neg_import_thresh | round(1) }}c/kWh and switch is ON)
-              * **4. Negative Price Curtailment**
-                * *Status:* {% if curtailment_active %}🛑 **TRIGGERED**{% else %}⚪ False{% endif %}
-                * *Values:* Live Feed-in: {{ exp_price | round(1) }}c/kWh (Curtails if at or below {{ curtailment_thresh | round(1) }}c/kWh and battery is full; once curtailed, holds until above {{ (curtailment_thresh + hysteresis) | round(1) }}c/kWh)
-              * **5. Predictive Export Hold**
-                * *Status:* {% if hold_exp_active %}🛑 **HOLDING**{% else %}⚪ False{% endif %}
-                * *Values:* 12h Forecast Max: {{ max_exp_12h | round(1) }}c/kWh (Holds if export/soak tier met, forecast >= {{ pred_exp_thresh | round(1) }}c/kWh and forecast > live + {{ hysteresis | round(1) }}c, Override at {{ pred_exp_override | round(1) }}c/kWh)
-              * **6. Solar Soak Pre-Export**
-                * *Status:* {% if soak_exp_active %}☀️ **SOAKING**{% else %}⚪ False{% endif %}
-                * *Values:* Window: {{ 'ACTIVE' if neg_forecast_on else 'WAITING' }}, Done Today: {{ 'YES' if completed_today else 'NO' }}, Live Price: {{ exp_price | round(1) }}c/kWh (Req: >= {{ soak_min_price | round(1) }}c/kWh), Live SOC: {{ soc }}% (Req: > {{ soak_target_soc | int(20) }}%)
-              * **7. Export Minimum SOC Guard**
-                * *Status:* {% if exp_guard_active %}🛑 **GUARD ACTIVE**{% else %}⚪ False{% endif %}
-                * *Values:* Live SOC: {{ soc }}% (Blocks export tiers if <= {{ states('input_number.amber_export_min_soc_guard') }}%)
-              * **8. Export Tier 1**
-                * *Status:* {% if t1_exp %}📤 **MATCHED**{% else %}⚪ False{% endif %}
-                * *Values:* Live SOC: {{ soc }}% (Req: >= {{ t1_exp_soc }}%), Live Price: {{ exp_price | round(1) }}c/kWh (Req: >= {{ t1_exp_price | round(1) }}c/kWh)
-              * **9. Export Tier 2**
-                * *Status:* {% if t2_exp %}📤 **MATCHED**{% else %}⚪ False{% endif %}
-                * *Values:* Live SOC: {{ soc }}% (Req: >= {{ t2_exp_soc }}%), Live Price: {{ exp_price | round(1) }}c/kWh (Req: >= {{ t2_exp_price | round(1) }}c/kWh)
-              * **10. Export Tier 3**
-                * *Status:* {% if t3_exp %}📤 **MATCHED**{% else %}⚪ False{% endif %}
-                * *Values:* Live SOC: {{ soc }}% (Req: >= {{ t3_exp_soc }}%), Live Price: {{ exp_price | round(1) }}c/kWh (Req: >= {{ t3_exp_price | round(1) }}c/kWh)
-              * **11. Predictive Import Hold**
-                * *Status:* {% if hold_imp_active %}🛑 **HOLDING**{% else %}⚪ False{% endif %}
-                * *Values:* 12h Forecast Min: {{ min_imp_12h | round(1) }}c/kWh (Holds if import tier met, forecast <= {{ pred_imp_thresh | round(1) }}c/kWh and forecast < live - {{ hysteresis | round(1) }}c, Override at {{ pred_imp_override | round(1) }}c/kWh)
-              * **12. Import Tier 1**
-                * *Status:* {% if t1_imp %}📥 **MATCHED**{% else %}⚪ False{% endif %}
-                * *Values:* Live SOC: {{ soc }}% (Req: <= {{ t1_imp_soc }}% and < 98%), Live Price: {{ imp_price | round(1) }}c/kWh (Req: <= {{ t1_imp_price | round(1) }}c/kWh)
-              * **13. Import Tier 2**
-                * *Status:* {% if t2_imp %}📥 **MATCHED**{% else %}⚪ False{% endif %}
-                * *Values:* Live SOC: {{ soc }}% (Req: <= {{ t2_imp_soc }}% and < 98%), Live Price: {{ imp_price | round(1) }}c/kWh (Req: <= {{ t2_imp_price | round(1) }}c/kWh)
-      # --- SOLAR SOAK MATHEMATICAL INSPECTOR ---
-      - type: vertical-stack
-        cards:
-          - type: markdown
-            content: >
-              ### 🧮 Solar Soak Headroom Mathematical Inspector
-              
-              Inspect the exact mathematical steps used to determine required battery headroom and target pre-discharge SoC before midday negative pricing dips.
-              
-              {% set solcast_raw = states('sensor.amber_solcast_10_forecast') | float(0) %}
-              {% set weight = states('input_number.amber_soak_forecast_weight') | float(1.0) %}
-              {% set house_load = states('sensor.amber_average_daytime_house_load') | float(0) %}
-              {% set batt_cap = states('input_number.amber_battery_capacity') | float(10.0) %}
-              {% set max_target_soc = states('input_number.amber_soak_max_target_soc') | float(95) %}
-              {% set min_soak_soc = states('input_number.amber_soak_min_soc') | float(20) %}
-              {% set soc_hysteresis = states('input_number.amber_soc_hysteresis') | float(5) %}
-              {% set weighted_solar = solcast_raw * weight %}
-              {% set expected_kwh = [weighted_solar - house_load, 0] | max %}
-              {% set headroom_pct = ((expected_kwh / batt_cap) * 100.0) if batt_cap > 0 else 0 %}
-              {% set unclipped_target = max_target_soc - headroom_pct %}
-              {% set final_target = states('sensor.amber_solar_soak_target_soc') | float(0) %}
-              {% set current_soc = states('sensor.alphaess_soc_battery') | float(0) %}
-              {% set currently_soaking = 'Solar Soak' in states('input_text.amber_active_tier_status') %}
-              {% set kwh_to_discharge = (((current_soc - final_target) / 100.0) * batt_cap) if current_soc > final_target else 0.0 %}
-              {% set pre_export_needed = final_target < max_target_soc and current_soc > min_soak_soc and ((currently_soaking and current_soc > final_target) or (not currently_soaking and current_soc >= (final_target + soc_hysteresis))) %}
-              
-              #### ⚙️ Calculation Breakdown
-              
-              * **Raw Solcast 10% Yield:** `{{ solcast_raw }} kWh`
-              * **Applied Weight Multiplier:** `{{ weight }}x`
-              * **Weighted Solar Yield:** `{{ weighted_solar | round(2) }} kWh`
-              * **Average Daytime House Load:** `{{ house_load }} kWh`
-              * **Net Expected Solar to Battery:** `{{ expected_kwh | round(2) }} kWh`
-              * **Usable Battery Capacity:** `{{ batt_cap }} kWh`
-              * **Required Headroom:** `({{ expected_kwh | round(2) }} / {{ batt_cap }}) * 100` = `{{ headroom_pct | round(1) }}%`
-              * **Unclamped Target SOC:** `{{ max_target_soc }}% - {{ headroom_pct | round(1) }}%` = `{{ unclipped_target | round(1) }}%`
-              * **Clamped Target SOC:** `max({{ unclipped_target | round(1) }}%, Floor {{ min_soak_soc }}%)` = **`{{ final_target | int(20) }}%`**
-              
-              ---
-              
-              #### 📊 Live Pre-Discharge Status
-              
-              * **Current Battery SOC:** `{{ current_soc }}%`
-              * **Target Soak SOC:** `{{ final_target | int(20) }}%`
-              * **Pre-Discharge Deficit:** `{{ (current_soc - final_target) | round(1) }}%` (`{{ kwh_to_discharge | round(2) }} kWh` remaining to pre-export)
-              * **Pre-Export Required:** {% if pre_export_needed %}⚡ **YES (Current SOC above target with hysteresis & floor satisfied)**{% else %}🟢 **NO (Target satisfied or below minimum floor)**{% endif %}
-
-      # --- AUTOMATION EVENT HISTORY & LOGBOOK ---
-      - type: vertical-stack
-        cards:
-          - type: markdown
-            content: >
-              ### 📜 Automation Event History & Activity Timeline
-              
-              Chronological log of recent automation executions, state machine transitions, and Modbus hardware commands over the past 24 hours.
-          - type: logbook
-            hours_to_show: 24
+          - type: entities
+            title: Logic tuneables
             entities:
-              - automation.amber_energy_dispatch_optimization_tiered
-              - automation.amber_solar_soak_daily_cycle_manager
-              - input_text.amber_active_tier_status
-              - input_boolean.alphaess_helper_dispatch
-              - input_select.alphaess_helper_dispatch_mode
-              - input_boolean.amber_automation_enabled
+              - entity: input_number.amber_price_hysteresis
+                name: Price hysteresis (c/kWh)
+              - entity: input_number.amber_soc_hysteresis
+                name: SOC hysteresis (%)
+              - entity: input_number.amber_export_min_soc_guard
+                name: Export SOC guard (%)
 
-      # --- LIVE SENSOR TELEMETRY ---
-      - type: vertical-stack
+      # --- SOLAR SOAK INSPECTOR ---
+      - type: grid
         cards:
+          - type: heading
+            heading: Solar Soak Inspector
+            icon: mdi:calculator-variant
           - type: markdown
-            content: >
-              ### 📡 Live Sensor Telemetry & Forecasts
-              
-              Raw sensor feeds monitoring prices, 12h forecasts, solar yield, and battery power flows.
+            content: |
+              {%- set t = 'sensor.amber_solar_soak_target_soc' -%}
+              {%- set final = states(t) | float(0) -%}
+              {%- set at = state_attr(t, 'calculated_at') -%}
+              {%- set max_t = state_attr(t, 'max_target_soc') | float(95) -%}
+              {%- set min_t = state_attr(t, 'min_soc') | float(20) -%}
+              {%- set hr = state_attr(t, 'required_headroom_pct') | float(0) -%}
+              {%- macro target(solcast, weight, load, cap, mx, mn) -%}
+                {%- set h = (([solcast * weight - load, 0] | max) / cap * 100.0) if cap > 0 else 0 -%}
+                {{- ([[mx - h, mn] | max, mx] | min) | round(0) | int -}}
+              {%- endmacro -%}
+              #### Target SOC: {{ final | int }}%
+              {% if at is none -%}
+              <ha-alert alert-type="info">The calculation breakdown appears after the next recalculation (00:01, 06:00, 16:05, or when a soak setting changes).</ha-alert>
+              {%- else -%}
+              <small>Frozen at {{ as_datetime(at) | as_local | as_timestamp | timestamp_custom('%a %H:%M') }}. These are the values the engine is using.</small>
+
+              | Step | Value |
+              |---|---|
+              | Solcast P10 yield | {{ state_attr(t, 'solcast_kwh') }} kWh |
+              | × forecast weight | {{ state_attr(t, 'weight') }} → {{ (state_attr(t, 'solcast_kwh') | float(0) * state_attr(t, 'weight') | float(1)) | round(2) }} kWh |
+              | − avg daytime load | {{ state_attr(t, 'house_load_kwh') }} kWh |
+              | = solar to battery | {{ state_attr(t, 'expected_solar_to_batt_kwh') }} kWh |
+              | ÷ capacity | {{ state_attr(t, 'battery_capacity_kwh') }} kWh → **{{ hr }}% headroom** |
+              | Max target − headroom | {{ max_t | int }}% − {{ hr }}% = {{ (max_t - hr) | round(1) }}% |
+              | Clamped to {{ min_t | int }}–{{ max_t | int }}% | **{{ final | int }}%** |
+
+              {%- set live = target(states('sensor.amber_solcast_10_forecast') | float(0), states('input_number.amber_soak_forecast_weight') | float(1),
+                                    states('sensor.amber_average_daytime_house_load') | float(0), states('input_number.amber_battery_capacity') | float(10),
+                                    states('input_number.amber_soak_max_target_soc') | float(95), states('input_number.amber_soak_min_soc') | float(20)) | int -%}
+              {%- if live != final | int %}
+
+              <ha-alert alert-type="info">With today's live forecast and load the target would be <b>{{ live }}%</b>. The engine keeps using {{ final | int }}% until the next scheduled recalculation.</ha-alert>
+              {%- endif -%}
+              {%- endif %}
+
+              #### Pre-discharge status
+              {%- set rules = state_attr('sensor.amber_engine_decision', 'rules') or [] -%}
+              {%- set soak = rules | selectattr('key', 'eq', 'solar_soak') | list -%}
+              {%- set soc = states('sensor.alphaess_soc_battery') | float(0) -%}
+              {%- set cap = states('input_number.amber_battery_capacity') | float(0) %}
+
+              - **Battery SOC:** {{ soc }}% → target {{ final | int }}% ({{ [soc - final, 0] | max | round(1) }}% / {{ ([soc - final, 0] | max / 100 * cap) | round(2) }} kWh left to pre-export)
+              - **Pre-export window sensor:** {{ states('sensor.amber_negative_export_forecast_12h') }}{{ ' (latched while soaking)' if 'Solar Soak' in states('input_text.amber_active_tier_status') else '' }}
+              - **Completed today:** {{ 'yes' if is_state('input_boolean.amber_solar_soak_completed_today', 'on') else 'no' }}
+              {%- if soak %}
+              - **Engine verdict:** {{ soak[0].summary }}
+              {%- endif %}
+
+      # --- TELEMETRY ---
+      - type: grid
+        cards:
+          - type: heading
+            heading: Live Telemetry & Forecasts
+            icon: mdi:access-point-network
           - type: entities
             entities:
               - type: section
-                label: Live Prices & Pricing Forecasts
+                label: Prices & forecasts
               - entity: sensor.amber_express_home_feed_in_price
                 name: Live Feed-in Price ($/kWh)
               - entity: sensor.amber_express_home_general_price
@@ -308,158 +293,161 @@ views:
               - entity: sensor.amber_min_import_forecast_12h
                 name: Next 12h Min Import Forecast (c/kWh)
               - entity: sensor.amber_negative_export_forecast_12h
-                name: Solar Soak Dispatch Window (24h)
+                name: Solar Soak Pre-Export Window
               - type: section
-                label: Solar Forecast & Soak Headroom
+                label: Solar forecast & soak headroom
               - entity: sensor.solcast_pv_forecast_forecast_today
-                name: Solcast Forecast Today (used before 16:00)
+                name: Solcast Today (used before 16:00)
               - entity: sensor.solcast_pv_forecast_forecast_tomorrow
-                name: Solcast Forecast Tomorrow (used from 16:00)
+                name: Solcast Tomorrow (used from 16:00)
               - entity: sensor.amber_solcast_10_forecast
-                name: Extracted Solcast 10% Yield (kWh)
+                name: Extracted Solcast P10 Yield (kWh)
               - entity: sensor.amber_average_daytime_house_load
                 name: 7-Day Daytime House Load Avg (kWh)
               - entity: sensor.amber_solar_soak_target_soc
-                name: Calculated Soak Target SOC (%)
+                name: Soak Target SOC (%)
+                secondary_info: last-changed
               - entity: input_boolean.amber_solar_soak_completed_today
                 name: Solar Soak Completed Today
               - type: section
-                label: Battery State & Power Flows
+                label: Battery & power flows
               - entity: binary_sensor.alphaess_inverter_connected
                 name: Inverter Communication
               - entity: sensor.alphaess_soc_battery
-                name: Battery State of Charge (%)
+                name: Battery SOC (%)
               - entity: sensor.alphaess_battery_full
                 name: Battery Full Flag
               - entity: sensor.alphaess_power_battery
-                name: Battery Power Flow (W)
+                name: Battery Power (W)
               - entity: sensor.alphaess_current_pv_production
                 name: Solar PV Generation (W)
               - entity: sensor.alphaess_power_grid
-                name: Grid Power Flow (W)
+                name: Grid Power (W)
+
+      # --- ACTIVITY LOG ---
+      - type: grid
+        cards:
+          - type: heading
+            heading: Activity (last 24 h)
+            icon: mdi:history
+          - type: logbook
+            hours_to_show: 24
+            entities:
+              - sensor.amber_engine_decision
+              - input_text.amber_active_tier_status
+              - automation.amber_energy_dispatch_optimization_tiered
+              - automation.amber_solar_soak_daily_cycle_manager
+              - input_boolean.alphaess_helper_dispatch
+              - input_select.alphaess_helper_dispatch_mode
+              - input_boolean.amber_solar_soak_completed_today
+              - input_boolean.amber_automation_enabled
 
   # =========================================================================
   # VIEW 2: SCENARIO SIMULATOR & TESTING RECIPES
   # =========================================================================
   - title: Scenario Simulator
+    path: simulator
     icon: mdi:flask-outline
-    cards:
-      # --- SIMULATOR TRIGGER BAR ---
-      - type: horizontal-stack
+    type: sections
+    max_columns: 3
+    sections:
+      - type: grid
+        column_span: 2
         cards:
+          - type: heading
+            heading: Testing Recipes
+            icon: mdi:flask-outline
           - type: button
             name: Re-evaluate Automation Now
             icon: mdi:play-circle-outline
+            grid_options:
+              columns: 6
             tap_action:
-              action: call-service
-              service: automation.trigger
+              action: perform-action
+              perform_action: automation.trigger
               target:
                 entity_id: automation.amber_energy_dispatch_optimization_tiered
           - type: button
             name: Reset Inverter to Normal (Mode 5)
             icon: mdi:restore
+            grid_options:
+              columns: 6
             tap_action:
-              action: call-service
-              service: input_button.press
+              action: perform-action
+              perform_action: input_button.press
               target:
                 entity_id: input_button.alphaess_helper_dispatch_reset_full
-
-      # --- SCENARIO TESTING RECIPES ---
-      - type: vertical-stack
-        cards:
+              confirmation:
+                text: Send a full dispatch reset to the inverter?
           - type: markdown
-            content: >
-              ### 🔬 Step-by-Step Scenario Testing Recipes
-              
-              Follow these recipes to temporarily adjust helper thresholds and simulate real-world energy events without waiting for live market conditions.
-              
-              ---
-              
-              #### ☀️ Recipe 1: Simulate Solar Soak Pre-Export (Morning Pre-Discharge)
-              * **Goal:** Verify the system pre-discharges the battery to create capacity for midday solar.
-              * **Steps:**
-                1. Under **Solar Soak & Curtailment Controls**, set **Curtailment Trigger Price** to `-100c` (so curtailment doesn't block export).
-                2. Set **Pre-Export Min Feed-in** to `0c` (or below your live feed-in price).
-                3. Set **Solcast Forecast Weight** to `2.00` (drives target SOC down).
-                4. Ensure **Minimum SOC Floor** is below your current battery SOC.
-                5. Ensure `sensor.amber_negative_export_forecast_12h` is `on` and `input_boolean.amber_solar_soak_completed_today` is `off`.
-                6. Click **Re-evaluate Automation Now**.
-              * **Expected Result:** Status changes to **`☀️ Solar Soak Pre-Export Active`** and Inverter switches to **Mode 4 (Maximise Output)**.
-              
-              ---
-              
-              #### 🛑 Recipe 2: Simulate Negative Feed-in Curtailment (Midday Plunge)
-              * **Goal:** Verify exports are immediately halted when feed-in prices turn negative.
-              * **Steps:**
-                1. Under **Solar Soak & Curtailment Controls**, set **Curtailment Trigger Price** to `150c` (higher than live feed-in).
-                2. Ensure **Enable Negative Curtailment** is ON and `sensor.alphaess_battery_full` is `true`/`on`.
-                3. Click **Re-evaluate Automation Now**.
-              * **Expected Result:** Status immediately transitions to **`🛑 Solar Curtailed`** and Inverter returns to **Mode 5 (Normal Mode)**.
-              
-              ---
-              
-              #### 📈 Recipe 3: Simulate Export Tier 1 Price Spike (Selling to Grid)
-              * **Goal:** Verify high feed-in triggers aggressive battery discharge to the grid.
-              * **Steps:**
-                1. Under **Export Tier 1**, set **Trigger Price** to `0c` and **Minimum SOC** to `0%`.
-                2. Ensure Curtailment and Predictive Holds are not blocking exports.
-                3. Click **Re-evaluate Automation Now**.
-              * **Expected Result:** Status transitions to **`📤 Exporting (Tier 1)`** and Inverter engages **Mode 4 (Maximise Output)**.
-              
-              ---
-              
-              #### 📥 Recipe 4: Simulate Import Tier 1 Cheap Tariff (Grid Force-Charge)
-              * **Goal:** Verify cheap/negative import prices trigger full-power grid charging.
-              * **Steps:**
-                1. Under **Import Tier 1**, set **Trigger Price** to `500c` and **Maximum SOC** to `100%` (Ensure current battery SOC is below 98%).
-                2. Ensure Predictive Import Hold is not active.
-                3. Click **Re-evaluate Automation Now**.
-              * **Expected Result:** Status transitions to **`📥 Importing (Tier 1)`** and Inverter engages **Mode 6 (Optimise Consumption)**.
-              
-              ---
-              
-              #### 🔮 Recipe 5: Simulate Predictive Export Hold (Preserve Battery for Spike)
-              * **Goal:** Verify immediate exports are paused when an upcoming 12h spike is forecasted.
-              * **Steps:**
-                1. Under **Predictive Export Override**, set **Hold Threshold** to `0c` (lower than 12h max forecast).
-                2. Set **Release Hold Threshold** to `9900c`.
-                3. Ensure at least one Export Tier (or Solar Soak) has its thresholds met so an export would otherwise trigger.
-                4. Click **Re-evaluate Automation Now**.
-              * **Expected Result:** Status transitions to **`🛑 Holding Exports (Spike Forecasted!)`** and exports remain blocked.
-              
-              ---
-              
-              #### 🛡️ Recipe 6: Simulate Export Minimum SOC Guard
-              * **Goal:** Verify the battery is protected from discharging below your emergency reserve.
-              * **Steps:**
-                1. Enable an Export Tier with a `0c` price threshold.
-                2. Set **Export Minimum SOC Guard** to `90%` (higher than current battery SOC).
-                3. Click **Re-evaluate Automation Now**.
-              * **Expected Result:** Status transitions to **`🛑 Export Blocked (SOC Guard Active)`** and the battery is protected.
+            content: |
+              Temporarily adjust thresholds on the main dashboard's **Rules** and **Tuning** views to force a scenario, press **Re-evaluate**, then check the result on the **Engine Diagnostics** view. Put the thresholds back afterwards.
 
+              ---
 
+              #### ☀️ 1. Solar Soak pre-export
+              1. **Rules → Solar Soak & Curtailment:** set **Curtail at or below** to `-100c` and **Pre-export at or above** to `0c`.
+              2. **Tuning → Solar Soak:** set **Forecast weight** to `2.00` (pushes the target SOC down) and make sure **Minimum SOC floor** is below the current SOC.
+              3. Check `sensor.amber_negative_export_forecast_12h` is `on` and **Solar Soak Completed Today** is `off`.
+              4. Press **Re-evaluate**.
+
+              **Expect:** `☀️ Solar Soak Pre-Export Active`, Mode 4. Walk-through row 6 is 🟢.
+
+              #### 🛑 2. Curtailment
+              1. **Rules → Solar Soak & Curtailment:** set **Curtail at or below** to `150c` (above the live feed-in).
+              2. Make sure curtailment is on and `sensor.alphaess_battery_full` is `true`.
+              3. Press **Re-evaluate**.
+
+              **Expect:** `🛑 Solar Curtailed`, Mode 5, max feed-to-grid 0. After the battery-full flag drops, row 4 turns 🟡 (held by hysteresis).
+
+              #### 📤 3. Export Tier 1
+              1. **Rules → Export Tiers:** set Tier 1 **Min feed-in price** to `0c` and **Min SOC** to `0%`.
+              2. Make sure curtailment and the export hold are not blocking (rows 4–5 not 🟢/🛑).
+              3. Press **Re-evaluate**.
+
+              **Expect:** `📤 Exporting (Tier 1)`, Mode 4.
+
+              #### 📥 4. Import Tier 1
+              1. **Rules → Import Tiers:** set Tier 1 **Max import price** to `500c` and **Max SOC** to `100%` (SOC must be below 98%).
+              2. Make sure the import hold is off or not armed.
+              3. Press **Re-evaluate**.
+
+              **Expect:** `📥 Importing (Tier 1)`, Mode 6.
+
+              #### 🔮 5. Predictive export hold
+              1. **Rules → Predictive Holds:** turn the export hold on, set **Hold if 12h max is at or above** to `0c` and **Release if live is above** to `2000c`.
+              2. Make sure an export tier or Solar Soak meets entry (🔵 or 🟢 in the walk-through).
+              3. Press **Re-evaluate**.
+
+              **Expect:** `🛑 Holding Exports (Spike Forecasted!)`. The held rules show 🟠.
+
+              #### 🛡️ 6. Export SOC guard
+              1. Enable an export tier with a `0c` price and a min SOC below the current SOC.
+              2. **Tuning → Safeguards:** set **Export SOC guard** to `50%` (above the current SOC).
+              3. Press **Re-evaluate**.
+
+              **Expect:** `🛑 Export Blocked (SOC Guard Active)`. Row 7 is 🛑.
 
       # --- DIRECT MODBUS HARDWARE OVERRIDE ---
-      - type: vertical-stack
+      - type: grid
         cards:
+          - type: heading
+            heading: Direct Modbus Overrides
+            icon: mdi:alert-octagon-outline
           - type: markdown
-            content: >
-              ### 🛠️ Direct Modbus Hardware Overrides
-              
-              Manually write hardware dispatch commands directly to the AlphaESS inverter Modbus registers.
-              
-              **Note:** Commands sent here override automation logic until the next automation trigger or manual reset.
+            content: |
+              <ha-alert alert-type="warning">These write straight to the inverter helpers. While the master switch is on, the engine overwrites them on its next run.</ha-alert>
           - type: entities
             entities:
               - entity: input_select.alphaess_helper_dispatch_mode
-                name: Select Dispatch Mode
+                name: Dispatch Mode
               - entity: input_number.alphaess_helper_dispatch_duration
-                name: Set Dispatch Duration (min)
+                name: Dispatch Duration (min)
               - entity: input_boolean.alphaess_helper_dispatch
                 name: Send Dispatch Command
               - entity: input_button.alphaess_helper_dispatch_reset_full
                 name: Force Reset to Normal (Mode 5)
               - entity: input_boolean.alphaess_helper_dispatch_pv_switch
-                name: Toggle PV Hardware Switch
+                name: PV Switch
               - entity: input_number.alphaess_helper_max_feed_to_grid
-                name: Override Max Feed-to-Grid (%)
+                name: Max Feed-to-Grid (%)
