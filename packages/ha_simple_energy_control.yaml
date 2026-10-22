@@ -255,7 +255,10 @@ template:
           {{ has_value('sensor.alphaess_soc_battery') and
              state_attr('sensor.amber_express_home_feed_in_price', 'forecast') is not none }}
         state: >
-          {% set fcast = state_attr('sensor.amber_express_home_feed_in_price', 'forecast') %}
+          {# now() returns a new value on every call, so capture it once for consistent comparisons #}
+          {% set t_now = now() %}
+          {% set now_ts = as_timestamp(t_now) %}
+          {% set fcast = state_attr('sensor.amber_express_home_feed_in_price', 'forecast') or [] %}
           {% set thresh = states('input_number.amber_curtailment_price_threshold') | float(0.00) %}
           {% set min_export_price = states('input_number.amber_soak_min_pre_export_price') | float(0.00) %}
           {% set current_soc = states('sensor.alphaess_soc_battery') | float(0) %}
@@ -275,78 +278,52 @@ template:
           {% if completed_today or not surplus_predicted or batt_cap <= 0 or inverter_power <= 0 %}
             off
           {% else %}
-            {# 1. Determine dynamic cutoff time (morning negative price window before 10:30 or 10:30 default) #}
+            {# 1. Parse the forecast once into future [timestamp, c/kWh] pairs before the default 10:30 cutoff.
+                  The first price at/below the curtailment threshold from 06:00 onwards becomes an earlier cutoff. #}
             {% set today_1030 = today_at("10:30") %}
-            {% set default_cutoff = today_1030 if now() < today_1030 else (today_1030 + timedelta(days=1)) %}
-            {% set morning_start = default_cutoff - timedelta(hours=4, minutes=30) %}
-            {% set ns = namespace(t_neg=none) %}
-            {% if fcast %}
-              {% for item in fcast %}
-                {% set item_dt = as_datetime(item.time) %}
-                {% if item_dt is not none and item_dt > now() and item_dt >= morning_start and item_dt < default_cutoff and ns.t_neg is none %}
-                  {% if (item.value | float(0) * 100) <= thresh %}
-                    {% set ns.t_neg = item_dt %}
-                  {% endif %}
+            {% set default_cutoff_ts = as_timestamp(today_1030 if t_now < today_1030 else (today_1030 + timedelta(days=1))) %}
+            {% set p = namespace(items=[], t_neg=none) %}
+            {% for item in fcast %}
+              {% set ts = as_timestamp(item.time, none) %}
+              {% if ts is not none and ts > now_ts and ts < default_cutoff_ts %}
+                {% set price = (item.value | float(0)) * 100 %}
+                {% set p.items = p.items + [[ts, price]] %}
+                {% if p.t_neg is none and ts >= default_cutoff_ts - 16200 and price <= thresh %}
+                  {% set p.t_neg = ts %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+            {% set cutoff_ts = p.t_neg if p.t_neg is not none else default_cutoff_ts %}
+
+            {# 2. Required discharge duration (seconds) including a 15-minute buffer #}
+            {% set secs_needed = ((soc_to_discharge / 100.0) * batt_cap / inverter_power + 0.25) * 3600 %}
+            {% set live_price = (states('sensor.amber_express_home_feed_in_price') | float(0)) * 100 %}
+
+            {# 3. Session latching: if already soaking, stay active until target is achieved or cutoff reached #}
+            {% if currently_soaking %}
+              {% set price_hysteresis = states('input_number.amber_price_hysteresis') | float(0) %}
+              {{ 'on' if live_price >= (min_export_price - price_hysteresis) else 'off' }}
+            {% elif cutoff_ts - now_ts <= secs_needed %}
+              {# Not enough time to wait, start immediately to finish before cutoff #}
+              on
+            {% elif p.items %}
+              {# Scan windows starting now (live price) or at each forecast interval that finish before the
+                 cutoff; start when the highest-average window is within 5 minutes #}
+              {% set opt = namespace(best_avg=-999, best_start=none) %}
+              {% for w_start in [now_ts] + (p.items | map(attribute=0) | list) if w_start + secs_needed <= cutoff_ts %}
+                {% set w = namespace(sum=(live_price if w_start == now_ts else 0), count=(1 if w_start == now_ts else 0)) %}
+                {% for it in p.items if it[0] >= w_start and it[0] < w_start + secs_needed %}
+                  {% set w.sum = w.sum + it[1] %}
+                  {% set w.count = w.count + 1 %}
+                {% endfor %}
+                {% if w.count > 0 and w.sum / w.count > opt.best_avg %}
+                  {% set opt.best_avg = w.sum / w.count %}
+                  {% set opt.best_start = w_start %}
                 {% endif %}
               {% endfor %}
-            {% endif %}
-            {% set cutoff = ns.t_neg if ns.t_neg is not none else default_cutoff %}
-
-            {% if now() >= cutoff %}
-              off
+              {{ 'on' if opt.best_start is not none and now_ts >= opt.best_start - 300 else 'off' }}
             {% else %}
-              {# 2. Calculate required discharge duration #}
-              {% set kwh_to_discharge = (soc_to_discharge / 100.0) * batt_cap %}
-              {% set hours_needed = (kwh_to_discharge / inverter_power) + 0.25 %}
-              {% set time_until_cutoff = (cutoff - now()).total_seconds() / 3600.0 %}
-
-              {# 3. Session latching: if already soaking, stay active until target is achieved or cutoff reached #}
-              {% if currently_soaking %}
-                {% set live_price = (states('sensor.amber_express_home_feed_in_price') | float(0)) * 100 %}
-                {% set price_hysteresis = states('input_number.amber_price_hysteresis') | float(0) %}
-                {{ 'on' if live_price >= (min_export_price - price_hysteresis) else 'off' }}
-              {% elif time_until_cutoff <= hours_needed %}
-                {# Not enough time to wait, start immediately to finish before cutoff #}
-                on
-              {% elif fcast %}
-                {# Scan candidate windows starting from now() through cutoff to locate highest average feed-in tariff #}
-                {% set live_price = (states('sensor.amber_express_home_feed_in_price') | float(0)) * 100 %}
-                {% set opt = namespace(best_avg=-999, best_start=none) %}
-                {% set cs = namespace(list=[now()]) %}
-                {% for start_item in fcast %}
-                  {% set dt = as_datetime(start_item.time) %}
-                  {% if dt is not none and dt > now() and (dt + timedelta(hours=hours_needed)) <= cutoff %}
-                    {% set cs.list = cs.list + [dt] %}
-                  {% endif %}
-                {% endfor %}
-                {% for w_start in cs.list %}
-                  {% if (w_start + timedelta(hours=hours_needed)) <= cutoff %}
-                    {% set w_ns = namespace(sum=(live_price if w_start == now() else 0), count=(1 if w_start == now() else 0)) %}
-                    {% for w_item in fcast %}
-                      {% set w_item_dt = as_datetime(w_item.time) %}
-                      {% if w_item_dt is not none and w_item_dt >= w_start and w_item_dt < (w_start + timedelta(hours=hours_needed)) %}
-                        {% set w_ns.sum = w_ns.sum + ((w_item.value | float(0)) * 100) %}
-                        {% set w_ns.count = w_ns.count + 1 %}
-                      {% endif %}
-                    {% endfor %}
-                    {% if w_ns.count > 0 %}
-                      {% set avg_price = w_ns.sum / w_ns.count %}
-                      {% if avg_price > opt.best_avg %}
-                        {% set opt.best_avg = avg_price %}
-                        {% set opt.best_start = w_start %}
-                      {% endif %}
-                    {% endif %}
-                  {% endif %}
-                {% endfor %}
-
-                {% if opt.best_start is not none and now() >= (opt.best_start - timedelta(minutes=5)) %}
-                  on
-                {% else %}
-                  off
-                {% endif %}
-              {% else %}
-                off
-              {% endif %}
+              off
             {% endif %}
           {% endif %}
 
@@ -901,6 +878,7 @@ automation:
       - platform: state
         entity_id: input_boolean.alphaess_helper_dispatch
         to: "off"
+        id: dispatch_off
 
       # Pre-emptive re-arm: Trigger when the dispatch timer has less than 5 minutes remaining
       - platform: template
@@ -908,6 +886,16 @@ automation:
           {{ states('timer.alphaess_helper_dispatch_timer') == 'active' and
              state_attr('timer.alphaess_helper_dispatch_timer', 'finishes_at') is not none and
              (as_timestamp(state_attr('timer.alphaess_helper_dispatch_timer', 'finishes_at')) - as_timestamp(now())) < 300 }}
+
+    # Only re-arm on a dispatch turn-off during an active dispatch state. The status is written
+    # before any hardware step, so the engine's own turn-off (when returning to normal) fails
+    # this check and does not restart the run mid-sequence. Conditions are evaluated before
+    # 'mode: restart' cancels the running instance.
+    condition:
+      - condition: template
+        value_template: >
+          {{ trigger.id != 'dispatch_off' or
+             states('input_text.amber_active_tier_status') is search('Exporting|Importing|Solar Soak|Grid Drawing') }}
 
     action:
       # Debounce trailing-edge: Amber Express & Solcast update multiple price, forecast,
@@ -920,11 +908,13 @@ automation:
           # Inverter Connectivity Check
           inverter_online: "{{ is_state('binary_sensor.alphaess_inverter_connected', 'on') }}"
 
-          # Dispatch refresh tracking across boolean and duration helpers
+          # Last dispatch write across boolean, duration and mode helpers (a mode change while
+          # dispatching makes the integration re-dispatch, which counts as a refresh)
           last_dispatch_refresh: >
             {{ [
                  states.input_boolean.alphaess_helper_dispatch.last_changed | as_timestamp(0),
-                 states.input_number.alphaess_helper_dispatch_duration.last_changed | as_timestamp(0)
+                 states.input_number.alphaess_helper_dispatch_duration.last_changed | as_timestamp(0),
+                 states.input_select.alphaess_helper_dispatch_mode.last_changed | as_timestamp(0)
                ] | max }}
 
           # 1. Fetch current states (guarded against missing/offline inverter)
@@ -933,6 +923,7 @@ automation:
           export_price: "{{ (states('sensor.amber_express_home_feed_in_price') | float(0)) * 100 }}"
           hysteresis: "{{ states('input_number.amber_price_hysteresis') | float(0) }}"
           soc_hysteresis: "{{ states('input_number.amber_soc_hysteresis') | float(0) }}"
+          export_guard: "{{ states('input_number.amber_export_min_soc_guard') | float(10) }}"
           enabled: "{{ is_state('input_boolean.amber_automation_enabled', 'on') }}"
           current_status: "{{ states('input_text.amber_active_tier_status') }}"
 
@@ -946,33 +937,41 @@ automation:
           currently_curtailed: "{{ 'Solar Curtailed' in current_status }}"
           currently_neg_import: "{{ 'Grid Drawing' in current_status }}"
 
+          # Rule variables below omit the enabled/inverter_online checks: active_action
+          # evaluates both first, so the rules only matter once both are true.
+
           # 3. Negative Price Curtailment Check
-          # Active when curtailment toggle is ON, battery is full, and live feed-in price is at or below threshold (with hysteresis)
+          # Entry needs the battery full and feed-in at or below threshold. Once curtailed, it holds
+          # until feed-in rises above threshold + hysteresis (battery-full flicker no longer exits;
+          # PV still charges the battery in Normal mode with the feed limit at 0).
           curtailment_active: >
-            {{ enabled and inverter_online and is_state('input_boolean.amber_curtailment_enabled', 'on')
-               and is_state('sensor.alphaess_battery_full', ['true', 'True', 'on'])
-               and (
-                 (currently_curtailed
-                  and export_price <= (states('input_number.amber_curtailment_price_threshold')|float(0.00) + hysteresis))
+            {% set thresh = states('input_number.amber_curtailment_price_threshold') | float(0.00) %}
+            {{ is_state('input_boolean.amber_curtailment_enabled', 'on') and (
+                 (currently_curtailed and export_price <= thresh + hysteresis)
                  or
-                 (not currently_curtailed
-                  and export_price <= states('input_number.amber_curtailment_price_threshold')|float(0.00))
+                 (is_state('sensor.alphaess_battery_full', ['true', 'True', 'on']) and export_price <= thresh)
                ) }}
 
           # 4. Predictive Hold Logic (with absolute overrides)
+          # Holds only while the forecast extreme beats the live price by more than the hysteresis,
+          # so a spike/drop that is already happening is not held back waiting for itself.
           pred_exp_active: >
-            {{ enabled and inverter_online and is_state('input_boolean.amber_predictive_export_hold', 'on')
-               and states('sensor.amber_max_export_forecast_12h')|float(0) >= states('input_number.amber_export_forecast_threshold')|float(99)
-               and export_price < states('input_number.amber_export_absolute_override')|float(99) }}
+            {% set fcst = states('sensor.amber_max_export_forecast_12h') | float(0) %}
+            {{ is_state('input_boolean.amber_predictive_export_hold', 'on')
+               and fcst >= states('input_number.amber_export_forecast_threshold') | float(99)
+               and fcst > export_price + hysteresis
+               and export_price < states('input_number.amber_export_absolute_override') | float(99) }}
 
           pred_imp_active: >
-            {{ enabled and inverter_online and is_state('input_boolean.amber_predictive_import_hold', 'on')
-               and states('sensor.amber_min_import_forecast_12h')|float(0) <= states('input_number.amber_import_forecast_threshold')|float(-99)
-               and import_price > states('input_number.amber_import_absolute_override')|float(-99) }}
+            {% set fcst = states('sensor.amber_min_import_forecast_12h') | float(0) %}
+            {{ is_state('input_boolean.amber_predictive_import_hold', 'on')
+               and fcst <= states('input_number.amber_import_forecast_threshold') | float(-99)
+               and fcst < import_price - hysteresis
+               and import_price > states('input_number.amber_import_absolute_override') | float(-99) }}
 
           # 4.5 Negative Import Price (Highest Priority)
           neg_import_active: >
-            {{ enabled and inverter_online and is_state('input_boolean.amber_negative_import_enabled', 'on') and (
+            {{ is_state('input_boolean.amber_negative_import_enabled', 'on') and (
               (currently_neg_import and import_price <= (states('input_number.amber_negative_import_price_threshold')|float(0) + hysteresis))
               or
               (not currently_neg_import and import_price <= states('input_number.amber_negative_import_price_threshold')|float(0))
@@ -982,28 +981,25 @@ automation:
           soak_target_soc: "{{ states('sensor.amber_solar_soak_target_soc') | float(20) }}"
           soak_min_soc: "{{ states('input_number.amber_soak_min_soc') | float(20) }}"
           soak_exp_active: >
-            {{ enabled and inverter_online and not curtailment_active and not pred_exp_active
+            {{ not curtailment_active and not pred_exp_active
                and is_state('input_boolean.amber_solar_soak_enabled', 'on')
                and is_state('sensor.amber_negative_export_forecast_12h', 'on')
                and is_state('input_boolean.amber_solar_soak_completed_today', 'off')
                and export_price >= (states('input_number.amber_soak_min_pre_export_price')|float(0.00) - (hysteresis if currently_soaking else 0))
+               and soc > soak_min_soc
                and (
-                 (currently_soaking
-                  and soc > soak_target_soc
-                  and soc > soak_min_soc)
+                 (currently_soaking and soc > soak_target_soc)
                  or
-                 (not currently_soaking
-                  and soc >= (soak_target_soc + soc_hysteresis)
-                  and soc > soak_min_soc)
+                 (not currently_soaking and soc >= (soak_target_soc + soc_hysteresis))
                ) }}
 
           # 6. Evaluate export and import tier rules (blocked if curtailment is active)
           t1_exp: >
-            {{ enabled and inverter_online and not curtailment_active and not pred_exp_active
+            {{ not curtailment_active and not pred_exp_active
                and is_state('input_boolean.amber_export_tier_1_enabled', 'on')
                and (
                  (currently_exporting_t1
-                  and soc > states('input_number.amber_export_min_soc_guard') | float(10)
+                  and soc > export_guard
                   and soc >= (states('input_number.amber_export_soc_1')|float(100) - soc_hysteresis)
                   and export_price >= (states('input_number.amber_export_price_1')|float(99) - hysteresis))
                  or
@@ -1013,11 +1009,11 @@ automation:
                ) }}
 
           t2_exp: >
-            {{ enabled and inverter_online and not curtailment_active and not pred_exp_active
+            {{ not curtailment_active and not pred_exp_active
                and is_state('input_boolean.amber_export_tier_2_enabled', 'on')
                and (
                  (currently_exporting_t2
-                  and soc > states('input_number.amber_export_min_soc_guard') | float(10)
+                  and soc > export_guard
                   and soc >= (states('input_number.amber_export_soc_2')|float(100) - soc_hysteresis)
                   and export_price >= (states('input_number.amber_export_price_2')|float(99) - hysteresis))
                  or
@@ -1027,11 +1023,11 @@ automation:
                ) }}
 
           t3_exp: >
-            {{ enabled and inverter_online and not curtailment_active and not pred_exp_active
+            {{ not curtailment_active and not pred_exp_active
                and is_state('input_boolean.amber_export_tier_3_enabled', 'on')
                and (
                  (currently_exporting_t3
-                  and soc > states('input_number.amber_export_min_soc_guard') | float(10)
+                  and soc > export_guard
                   and soc >= (states('input_number.amber_export_soc_3')|float(100) - soc_hysteresis)
                   and export_price >= (states('input_number.amber_export_price_3')|float(99) - hysteresis))
                  or
@@ -1041,7 +1037,7 @@ automation:
                ) }}
 
           t1_imp: >
-            {{ enabled and inverter_online and not pred_imp_active
+            {{ not pred_imp_active
                and is_state('input_boolean.amber_import_tier_1_enabled', 'on')
                and soc >= 0
                and soc < 98
@@ -1056,7 +1052,7 @@ automation:
                ) }}
 
           t2_imp: >
-            {{ enabled and inverter_online and not pred_imp_active
+            {{ not pred_imp_active
                and is_state('input_boolean.amber_import_tier_2_enabled', 'on')
                and soc >= 0
                and soc < 98
@@ -1073,7 +1069,7 @@ automation:
           # 6.5 Raw entry criteria (unbuffered by exit hysteresis; excludes predictive holds)
           # Used for holding evaluation and emergency SOC guards to prevent state oscillation.
           soak_exp_raw: >
-            {{ enabled and inverter_online and not curtailment_active
+            {{ not curtailment_active
                and is_state('input_boolean.amber_solar_soak_enabled', 'on')
                and is_state('sensor.amber_negative_export_forecast_12h', 'on')
                and is_state('input_boolean.amber_solar_soak_completed_today', 'off')
@@ -1082,38 +1078,38 @@ automation:
                and soc > soak_min_soc }}
 
           t1_exp_raw: >
-            {{ enabled and inverter_online and not curtailment_active
+            {{ not curtailment_active
                and is_state('input_boolean.amber_export_tier_1_enabled', 'on')
                and soc >= states('input_number.amber_export_soc_1')|float(100)
                and export_price >= states('input_number.amber_export_price_1')|float(99) }}
 
           t2_exp_raw: >
-            {{ enabled and inverter_online and not curtailment_active
+            {{ not curtailment_active
                and is_state('input_boolean.amber_export_tier_2_enabled', 'on')
                and soc >= states('input_number.amber_export_soc_2')|float(100)
                and export_price >= states('input_number.amber_export_price_2')|float(99) }}
 
           t3_exp_raw: >
-            {{ enabled and inverter_online and not curtailment_active
+            {{ not curtailment_active
                and is_state('input_boolean.amber_export_tier_3_enabled', 'on')
                and soc >= states('input_number.amber_export_soc_3')|float(100)
                and export_price >= states('input_number.amber_export_price_3')|float(99) }}
 
           t1_imp_raw: >
-            {{ enabled and inverter_online
-               and is_state('input_boolean.amber_import_tier_1_enabled', 'on')
+            {{ is_state('input_boolean.amber_import_tier_1_enabled', 'on')
                and soc >= 0 and soc < 98
                and soc <= states('input_number.amber_import_soc_1')|float(0)
                and import_price <= states('input_number.amber_import_price_1')|float(-99) }}
 
           t2_imp_raw: >
-            {{ enabled and inverter_online
-               and is_state('input_boolean.amber_import_tier_2_enabled', 'on')
+            {{ is_state('input_boolean.amber_import_tier_2_enabled', 'on')
                and soc >= 0 and soc < 98
                and soc <= states('input_number.amber_import_soc_2')|float(0)
                and import_price <= states('input_number.amber_import_price_2')|float(-99) }}
 
           # 7. Determine the single active action (in priority order).
+          # Export tiers need no extra SOC guard here: an active tier checks the guard itself, and a
+          # fresh entry at or below the guard is caught by holding_soc_guard first.
           active_action: >
             {%- if not inverter_online -%} inverter_offline
             {%- elif not enabled -%} disabled
@@ -1121,17 +1117,17 @@ automation:
             {%- elif curtailment_active -%} curtailed
             {%- elif (soak_exp_raw or t1_exp_raw or t2_exp_raw or t3_exp_raw) and pred_exp_active -%} holding_spike
             {%- elif soak_exp_active -%} solar_soak
-            {%- elif (t1_exp_raw or t2_exp_raw or t3_exp_raw) and soc <= states('input_number.amber_export_min_soc_guard') | float(10) -%} holding_soc_guard
-            {%- elif t1_exp and soc > states('input_number.amber_export_min_soc_guard') | float(10) -%} export_1
-            {%- elif t2_exp and soc > states('input_number.amber_export_min_soc_guard') | float(10) -%} export_2
-            {%- elif t3_exp and soc > states('input_number.amber_export_min_soc_guard') | float(10) -%} export_3
+            {%- elif (t1_exp_raw or t2_exp_raw or t3_exp_raw) and soc <= export_guard -%} holding_soc_guard
+            {%- elif t1_exp -%} export_1
+            {%- elif t2_exp -%} export_2
+            {%- elif t3_exp -%} export_3
             {%- elif (t1_imp_raw or t2_imp_raw) and pred_imp_active -%} holding_import
             {%- elif t1_imp -%} import_1
             {%- elif t2_imp -%} import_2
             {%- else -%} idle {%- endif -%}
 
           # 8. Human-readable status string — driven entirely from active_action.
-          # We use purely static strings here to prevent spamming notifications 
+          # We use purely static strings here to prevent spamming notifications
           # or Modbus writes when dynamic variables (like live price) fluctuate.
           new_status_text: >
             {%- if active_action == 'disabled' -%} 🔴 Automation Disabled
@@ -1149,235 +1145,109 @@ automation:
             {%- elif active_action == 'import_2' -%} 📥 Importing (Tier 2)
             {%- else -%} 🟢 Idle (Normal Mode) {%- endif -%}
 
+          # 9. Inverter targets. Normal Mode (5) means "no forced dispatch".
+          target_mode: >
+            {%- if active_action == 'neg_import' -%} Maximise Consumption (7)
+            {%- elif active_action in ['export_1', 'export_2', 'export_3', 'solar_soak'] -%} Maximise Output (4)
+            {%- elif active_action in ['import_1', 'import_2'] -%} Optimise Consumption (6)
+            {%- else -%} Normal Mode (5) {%- endif -%}
+          mode_ok: "{{ is_state('input_select.alphaess_helper_dispatch_mode', target_mode) }}"
+          target_feed_to_grid: "{{ 0 if active_action == 'curtailed' else 100 }}"
+
       # Early exit when already disabled: prevents the automation from interfering with manual
       # dispatch modes while the master switch is off. On the FIRST trigger after disabling,
       # current_status still holds the previous state so the one-time inverter reset fires.
       - condition: template
         value_template: "{{ enabled or 'Automation Disabled' not in current_status }}"
 
+      # --- UPDATE STATE MACHINE ---
+      # Written before any hardware step so the dispatch_off trigger condition sees the new state.
       - if:
           - condition: template
-            value_template: "{{ inverter_online and active_action not in ['neg_import', 'inverter_offline'] and is_state('input_boolean.alphaess_helper_dispatch_pv_switch', 'off') }}"
+            value_template: "{{ current_status != new_status_text }}"
         then:
-          - service: input_boolean.turn_on
+          - service: input_text.set_value
             target:
-              entity_id: input_boolean.alphaess_helper_dispatch_pv_switch
+              entity_id: input_text.amber_active_tier_status
+            data:
+              value: "{{ new_status_text }}"
 
-      - choose:
-          # --- NEGATIVE IMPORT TRIGGER ---
-          - conditions:
-              - condition: template
-                value_template: "{{ active_action == 'neg_import' }}"
-            sequence:
-              - if:
-                  - condition: template
-                    value_template: "{{ states('input_number.alphaess_helper_max_feed_to_grid') | float(0) != 100 }}"
-                then:
-                  - service: input_number.set_value
-                    target:
-                      entity_id: input_number.alphaess_helper_max_feed_to_grid
-                    data:
-                      value: 100
-              - if:
-                  - condition: template
-                    value_template: "{{ is_state('input_boolean.alphaess_helper_dispatch_pv_switch', 'on') }}"
-                then:
-                  - service: input_boolean.turn_off
-                    target:
-                      entity_id: input_boolean.alphaess_helper_dispatch_pv_switch
-              - if:
-                  - condition: template
-                    value_template: >
-                      {{ current_status != new_status_text
-                         or is_state('input_boolean.alphaess_helper_dispatch', 'off')
-                         or not is_state('input_select.alphaess_helper_dispatch_mode', 'Maximise Consumption (7)')
-                         or (as_timestamp(now()) - (last_dispatch_refresh | float(0))) > 2700 }}
-                then:
-                  - if:
-                      - condition: template
-                        value_template: "{{ not is_state('input_select.alphaess_helper_dispatch_mode', 'Maximise Consumption (7)') }}"
-                    then:
-                      - service: input_select.select_option
-                        target:
-                          entity_id: input_select.alphaess_helper_dispatch_mode
-                        data:
-                          option: "Maximise Consumption (7)"
-                  - service: input_number.set_value
-                    target:
-                      entity_id: input_number.alphaess_helper_dispatch_duration
-                    data:
-                      value: >
-                        {% if states('input_number.alphaess_helper_dispatch_duration') | float(0) == 60 %}
-                          59
-                        {% else %}
-                          60
-                        {% endif %}
-                  - service: input_boolean.turn_on
-                    target:
-                      entity_id: input_boolean.alphaess_helper_dispatch
-
-          # --- CURTAILMENT TRIGGER ---
-          - conditions:
-              - condition: template
-                value_template: "{{ active_action == 'curtailed' }}"
-            sequence:
-              # Halt grid export via feed-to-grid limit (only if not already 0 to avoid redundant Modbus writes)
-              - if:
-                  - condition: template
-                    value_template: "{{ states('input_number.alphaess_helper_max_feed_to_grid') | float(100) != 0 }}"
-                then:
-                  - service: input_number.set_value
-                    target:
-                      entity_id: input_number.alphaess_helper_max_feed_to_grid
-                    data:
-                      value: 0
-              # Ensure any active dispatch is stopped and inverter returned to normal mode
-              - if:
-                  - condition: template
-                    value_template: >
-                      {{ is_state('input_boolean.alphaess_helper_dispatch', 'on')
-                         or not is_state('input_select.alphaess_helper_dispatch_mode', 'Normal Mode (5)') }}
-                then:
-                  - service: input_boolean.turn_off
-                    target:
-                      entity_id: input_boolean.alphaess_helper_dispatch
-                  - service: input_button.press
-                    target:
-                      entity_id: input_button.alphaess_helper_dispatch_reset_full
-
-          # --- EXPORT / SOLAR SOAK TRIGGER ---
-          # Activates Maximise Output (Mode 4) for up to 60 minutes when an export
-          # tier or solar soak pre-export condition is met and battery has charge to give.
-          # Dispatch commands are rate-limited: sent on state change, hardware timeout,
-          # or via a 45-minute keep-alive refresh to prevent unnecessary Modbus writes.
-          - conditions:
-              - condition: template
-                value_template: "{{ active_action in ['export_1', 'export_2', 'export_3', 'solar_soak'] }}"
-              - condition: template
-                value_template: >
-                  {{ (active_action == 'solar_soak' and soc > soak_min_soc) or
-                     (active_action in ['export_1', 'export_2', 'export_3'] and soc > states('input_number.amber_export_min_soc_guard') | float(10)) }}
-            sequence:
-              # Restore grid feed limit if transitioning from curtailment
-              - if:
-                  - condition: template
-                    value_template: "{{ states('input_number.alphaess_helper_max_feed_to_grid') | float(0) != 100 }}"
-                then:
-                  - service: input_number.set_value
-                    target:
-                      entity_id: input_number.alphaess_helper_max_feed_to_grid
-                    data:
-                      value: 100
-              # Modbus dispatch write (only on state change, timeout, or 45-min keep-alive refresh)
-              - if:
-                  - condition: template
-                    value_template: >
-                      {{ current_status != new_status_text
-                         or is_state('input_boolean.alphaess_helper_dispatch', 'off')
-                         or not is_state('input_select.alphaess_helper_dispatch_mode', 'Maximise Output (4)')
-                         or (as_timestamp(now()) - (last_dispatch_refresh | float(0))) > 2700 }}
-                then:
-                  - if:
-                      - condition: template
-                        value_template: "{{ not is_state('input_select.alphaess_helper_dispatch_mode', 'Maximise Output (4)') }}"
-                    then:
-                      - service: input_select.select_option
-                        target:
-                          entity_id: input_select.alphaess_helper_dispatch_mode
-                        data:
-                          option: "Maximise Output (4)"
-                  - service: input_number.set_value
-                    target:
-                      entity_id: input_number.alphaess_helper_dispatch_duration
-                    data:
-                      value: >
-                        {% if states('input_number.alphaess_helper_dispatch_duration') | float(0) == 60 %}
-                          59
-                        {% else %}
-                          60
-                        {% endif %}
-                  - service: input_boolean.turn_on
-                    target:
-                      entity_id: input_boolean.alphaess_helper_dispatch
-
-          # --- IMPORT TRIGGER ---
-          # Activates Optimise Consumption (Mode 6) for up to 60 minutes when an import
-          # tier condition is met and the battery is not already full.
-          # Mode 6: force-charges the battery at full power from the grid;
-          # house load served by grid; PV output also contributes.
-          # Dispatch commands are rate-limited: sent on state change, hardware timeout,
-          # or via a 45-minute keep-alive refresh to prevent unnecessary Modbus writes.
-          - conditions:
-              - condition: template
-                value_template: "{{ active_action in ['import_1', 'import_2'] }}"
-            sequence:
-              # Restore grid feed limit if transitioning from curtailment
-              - if:
-                  - condition: template
-                    value_template: "{{ states('input_number.alphaess_helper_max_feed_to_grid') | float(0) != 100 }}"
-                then:
-                  - service: input_number.set_value
-                    target:
-                      entity_id: input_number.alphaess_helper_max_feed_to_grid
-                    data:
-                      value: 100
-              # Modbus dispatch write (only on state change, timeout, or 45-min keep-alive refresh)
-              - if:
-                  - condition: template
-                    value_template: >
-                      {{ current_status != new_status_text
-                         or is_state('input_boolean.alphaess_helper_dispatch', 'off')
-                         or not is_state('input_select.alphaess_helper_dispatch_mode', 'Optimise Consumption (6)')
-                         or (as_timestamp(now()) - (last_dispatch_refresh | float(0))) > 2700 }}
-                then:
-                  - if:
-                      - condition: template
-                        value_template: "{{ not is_state('input_select.alphaess_helper_dispatch_mode', 'Optimise Consumption (6)') }}"
-                    then:
-                      - service: input_select.select_option
-                        target:
-                          entity_id: input_select.alphaess_helper_dispatch_mode
-                        data:
-                          option: "Optimise Consumption (6)"
-                  - service: input_number.set_value
-                    target:
-                      entity_id: input_number.alphaess_helper_dispatch_duration
-                    data:
-                      value: >
-                        {% if states('input_number.alphaess_helper_dispatch_duration') | float(0) == 60 %}
-                          59
-                        {% else %}
-                          60
-                        {% endif %}
-                  - service: input_boolean.turn_on
-                    target:
-                      entity_id: input_boolean.alphaess_helper_dispatch
-
-        # --- IDLE / DISABLED / HOLDING / CURTAILED (RETURN TO NORMAL) ---
-        # Resets the inverter to standard self-consumption via the reset button.
-        # Only fires when leaving an active export, import, or solar soak session —
-        # prevents spurious Modbus writes when disabling from idle, when a
-        # predictive hold activates while the inverter is already in normal mode,
-        # or when the inverter is offline / unreachable via Modbus.
-        default:
+      # --- INVERTER COMMANDS ---
+      # Every write is skipped while the inverter is offline and when the helper already holds the
+      # target value, so steady states produce no Modbus traffic.
+      - if:
+          - condition: template
+            value_template: "{{ inverter_online }}"
+        then:
+          # PV off only while drawing from the grid at a negative import price
           - if:
               - condition: template
-                value_template: "{{ inverter_online }}"
+                value_template: "{{ is_state('input_boolean.alphaess_helper_dispatch_pv_switch', 'on') == (active_action == 'neg_import') }}"
             then:
-              - if:
+              - service: "input_boolean.turn_{{ 'off' if active_action == 'neg_import' else 'on' }}"
+                target:
+                  entity_id: input_boolean.alphaess_helper_dispatch_pv_switch
+
+          # Grid export limit: 0 while curtailed, otherwise 100
+          - if:
+              - condition: template
+                value_template: "{{ states('input_number.alphaess_helper_max_feed_to_grid') | float(-1) != target_feed_to_grid }}"
+            then:
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.alphaess_helper_max_feed_to_grid
+                data:
+                  value: "{{ target_feed_to_grid }}"
+
+          - choose:
+              # --- FORCED DISPATCH (neg import Mode 7 / export & solar soak Mode 4 / import Mode 6) ---
+              # Runs for up to 60 minutes per dispatch.
+              - conditions:
                   - condition: template
-                    value_template: "{{ states('input_number.alphaess_helper_max_feed_to_grid') | float(0) != 100 }}"
-                then:
-                  - service: input_number.set_value
-                    target:
-                      entity_id: input_number.alphaess_helper_max_feed_to_grid
-                    data:
-                      value: 100
+                    value_template: "{{ target_mode != 'Normal Mode (5)' }}"
+                sequence:
+                  # With dispatch on, the integration re-dispatches itself on a mode change;
+                  # with dispatch off, the mode change is free and applied by the turn_on below.
+                  - if:
+                      - condition: template
+                        value_template: "{{ not mode_ok }}"
+                    then:
+                      - service: input_select.select_option
+                        target:
+                          entity_id: input_select.alphaess_helper_dispatch_mode
+                        data:
+                          option: "{{ target_mode }}"
+                  - choose:
+                      - conditions:
+                          - condition: state
+                            entity_id: input_boolean.alphaess_helper_dispatch
+                            state: "off"
+                        sequence:
+                          - service: input_boolean.turn_on
+                            target:
+                              entity_id: input_boolean.alphaess_helper_dispatch
+                      # Keep-alive: toggling the duration (59/60) rewrites only the duration register.
+                      # Due after 50 min; the <5-min-remaining trigger guarantees it runs by 55 min.
+                      - conditions:
+                          - condition: template
+                            value_template: "{{ mode_ok and (as_timestamp(now()) - (last_dispatch_refresh | float(0))) > 3000 }}"
+                        sequence:
+                          - service: input_number.set_value
+                            target:
+                              entity_id: input_number.alphaess_helper_dispatch_duration
+                            data:
+                              value: "{{ 59 if states('input_number.alphaess_helper_dispatch_duration') | float(0) == 60 else 60 }}"
+
+            # --- RETURN TO NORMAL (idle / disabled / holds / curtailed) ---
+            # Resets only when a dispatch is still active or the mode helper is not yet back on
+            # Normal Mode (5). The mode helper is set after the dispatch is off, which writes
+            # nothing to the inverter but stops repeat resets on every later run.
+            default:
               - if:
                   - condition: template
                     value_template: >
                       {{ is_state('input_boolean.alphaess_helper_dispatch', 'on')
-                         or not is_state('input_select.alphaess_helper_dispatch_mode', 'Normal Mode (5)') }}
+                         or not mode_ok }}
                 then:
                   - service: input_boolean.turn_off
                     target:
@@ -1385,9 +1255,14 @@ automation:
                   - service: input_button.press
                     target:
                       entity_id: input_button.alphaess_helper_dispatch_reset_full
+                  - service: input_select.select_option
+                    target:
+                      entity_id: input_select.alphaess_helper_dispatch_mode
+                    data:
+                      option: "Normal Mode (5)"
 
       # --- SOLAR SOAK COMPLETION LATCH ---
-      # Decoupled from choose default: ensures completion is latched even if solar_soak
+      # Decoupled from the dispatch choose: ensures completion is latched even if solar_soak
       # transitions directly into curtailment, export_1–3, or neg_import.
       - if:
           - condition: template
@@ -1403,19 +1278,7 @@ automation:
             target:
               entity_id: input_boolean.amber_solar_soak_completed_today
 
-      # --- 9. UPDATE STATE MACHINE ---
-      # Update dashboard status indicator only when state has actually transitioned.
-      - if:
-          - condition: template
-            value_template: "{{ current_status != new_status_text }}"
-        then:
-          - service: input_text.set_value
-            target:
-              entity_id: input_text.amber_active_tier_status
-            data:
-              value: "{{ new_status_text }}"
-
-      # --- 10. UNIFIED NOTIFICATION MANAGER ---
+      # --- UNIFIED NOTIFICATION MANAGER ---
       # Fires a context-aware push notification exactly once on every state transition.
       - if:
           - condition: template
@@ -1425,20 +1288,21 @@ automation:
             data:
               title: >
                 {% if active_action == 'inverter_offline' %}⚠️ AlphaESS Inverter Offline
-                {% elif 'Inverter Offline' in current_status and active_action != 'inverter_offline' %}🔄 AlphaESS Inverter Reconnected
+                {% elif 'Inverter Offline' in current_status %}🔄 AlphaESS Inverter Reconnected
                 {% elif active_action == 'solar_soak' %}☀️ Solar Soak Pre-Export Active
                 {% elif active_action == 'curtailed' %}🛑 Solar Export Curtailed
                 {% elif active_action == 'neg_import' %}📥 Grid Drawing Active
                 {% elif active_action == 'idle' %}🔄 HA Simple Energy Control Reset
-                {% elif 'export' in active_action %}📈 Amber Export Initiated!
-                {% elif 'import' in active_action %}📉 Amber Import Initiated!
-                {% elif 'holding' in active_action %}🛑 Predictive Hold Active
+                {% elif active_action == 'holding_soc_guard' %}🛑 Export Blocked (SOC Guard)
+                {% elif active_action.startswith('holding') %}🛑 Predictive Hold Active
+                {% elif active_action.startswith('export') %}📈 Amber Export Initiated!
+                {% elif active_action.startswith('import') %}📉 Amber Import Initiated!
                 {% elif active_action == 'disabled' %}🔴 Automation Disabled
                 {% else %}⚡ System State Changed{% endif %}
               message: >
                 {% if active_action == 'inverter_offline' %}
                   Communication with AlphaESS inverter lost via Modbus. Automated battery control and solar curtailment are paused to prevent erroneous actions.
-                {% elif 'Inverter Offline' in current_status and active_action != 'inverter_offline' %}
+                {% elif 'Inverter Offline' in current_status %}
                   AlphaESS inverter connection restored. Resuming automated energy management (Status: {{ new_status_text }}).
                 {% elif active_action == 'solar_soak' %}
                   Pre-exporting battery from {{ soc | int(0) }}% down to {{ soak_target_soc | int(20) }}% Target SoC to absorb upcoming midday solar. Feed-in: {{ export_price | round(1) }}c/kWh.
@@ -1450,9 +1314,9 @@ automation:
                   Feed-in price is {{ export_price | round(1) }}c/kWh. Halting exports to protect against negative tariffs.
                 {% elif active_action == 'disabled' %}
                   The master switch has been turned off. Returning to manual control.
-                {% elif 'export' in active_action %}
+                {% elif active_action.startswith('export') %}
                   {{ new_status_text }} - Feed-in is {{ export_price | round(1) }}c/kWh (SOC: {{ soc }}%).
-                {% elif 'import' in active_action %}
+                {% elif active_action.startswith('import') %}
                   {{ new_status_text }} - Import is {{ import_price | round(1) }}c/kWh (SOC: {{ soc }}%).
                 {% else %}
                   {{ new_status_text }} (Feed-in: {{ export_price | round(1) }}c/kWh, Import: {{ import_price | round(1) }}c/kWh, SOC: {{ soc }}%).

@@ -33,6 +33,19 @@ views:
                 name: PV Switch Helper (Negative Import Cutoff)
               - entity: input_number.alphaess_helper_max_feed_to_grid
                 name: Grid Feed-In Limit (Curtailment)
+              - entity: timer.alphaess_helper_dispatch_timer
+                name: Dispatch Timer (keep-alive refresh due at 50 min)
+              - type: section
+                label: Automations (last triggered)
+              - entity: automation.amber_energy_dispatch_optimization_tiered
+                name: Dispatch Engine
+                secondary_info: last-triggered
+              - entity: automation.amber_solar_soak_daily_cycle_manager
+                name: Solar Soak Daily Cycle Manager
+                secondary_info: last-triggered
+              - entity: automation.amber_house_load_tariff_switch
+                name: House Load Tariff Switch
+                secondary_info: last-triggered
           - type: horizontal-stack
             cards:
               - type: button
@@ -72,17 +85,17 @@ views:
               
               {% set curtailment_thresh = states('input_number.amber_curtailment_price_threshold') | float(0.00) %}
               {% set currently_curtailed = 'Solar Curtailed' in current_status %}
-              {% set curtailment_active = enabled and inverter_online and is_state('input_boolean.amber_curtailment_enabled', 'on') and is_state('sensor.alphaess_battery_full', ['true', 'True', 'on']) and (((currently_curtailed and exp_price <= (curtailment_thresh + hysteresis))) or (not currently_curtailed and exp_price <= curtailment_thresh)) %}
+              {% set curtailment_active = enabled and inverter_online and is_state('input_boolean.amber_curtailment_enabled', 'on') and ((currently_curtailed and exp_price <= (curtailment_thresh + hysteresis)) or (is_state('sensor.alphaess_battery_full', ['true', 'True', 'on']) and exp_price <= curtailment_thresh)) %}
               
               {% set pred_exp_thresh = states('input_number.amber_export_forecast_threshold') | float(99) %}
               {% set pred_exp_override = states('input_number.amber_export_absolute_override') | float(99) %}
               {% set max_exp_12h = states('sensor.amber_max_export_forecast_12h') | float(0) %}
-              {% set pred_exp_active = enabled and inverter_online and is_state('input_boolean.amber_predictive_export_hold', 'on') and max_exp_12h >= pred_exp_thresh and exp_price < pred_exp_override %}
+              {% set pred_exp_active = enabled and inverter_online and is_state('input_boolean.amber_predictive_export_hold', 'on') and max_exp_12h >= pred_exp_thresh and max_exp_12h > exp_price + hysteresis and exp_price < pred_exp_override %}
               
               {% set pred_imp_thresh = states('input_number.amber_import_forecast_threshold') | float(-99) %}
               {% set pred_imp_override = states('input_number.amber_import_absolute_override') | float(-99) %}
               {% set min_imp_12h = states('sensor.amber_min_import_forecast_12h') | float(0) %}
-              {% set pred_imp_active = enabled and inverter_online and is_state('input_boolean.amber_predictive_import_hold', 'on') and min_imp_12h <= pred_imp_thresh and imp_price > pred_imp_override %}
+              {% set pred_imp_active = enabled and inverter_online and is_state('input_boolean.amber_predictive_import_hold', 'on') and min_imp_12h <= pred_imp_thresh and min_imp_12h < imp_price - hysteresis and imp_price > pred_imp_override %}
               
               {% set neg_import_thresh = states('input_number.amber_negative_import_price_threshold') | float(0) %}
               {% set currently_neg_import = 'Grid Drawing' in current_status %}
@@ -181,10 +194,10 @@ views:
                 * *Values:* Live Import: {{ imp_price | round(1) }}c/kWh (Triggers if at or below {{ neg_import_thresh | round(1) }}c/kWh and switch is ON)
               * **4. Negative Price Curtailment**
                 * *Status:* {% if curtailment_active %}🛑 **TRIGGERED**{% else %}⚪ False{% endif %}
-                * *Values:* Live Feed-in: {{ exp_price | round(1) }}c/kWh (Curtails if at or below {{ curtailment_thresh | round(1) }}c/kWh and battery is full)
+                * *Values:* Live Feed-in: {{ exp_price | round(1) }}c/kWh (Curtails if at or below {{ curtailment_thresh | round(1) }}c/kWh and battery is full; once curtailed, holds until above {{ (curtailment_thresh + hysteresis) | round(1) }}c/kWh)
               * **5. Predictive Export Hold**
                 * *Status:* {% if hold_exp_active %}🛑 **HOLDING**{% else %}⚪ False{% endif %}
-                * *Values:* 12h Forecast Max: {{ max_exp_12h | round(1) }}c/kWh (Holds if export/soak tier met and forecast >= {{ pred_exp_thresh | round(1) }}c/kWh, Override at {{ pred_exp_override | round(1) }}c/kWh)
+                * *Values:* 12h Forecast Max: {{ max_exp_12h | round(1) }}c/kWh (Holds if export/soak tier met, forecast >= {{ pred_exp_thresh | round(1) }}c/kWh and forecast > live + {{ hysteresis | round(1) }}c, Override at {{ pred_exp_override | round(1) }}c/kWh)
               * **6. Solar Soak Pre-Export**
                 * *Status:* {% if soak_exp_active %}☀️ **SOAKING**{% else %}⚪ False{% endif %}
                 * *Values:* Window: {{ 'ACTIVE' if neg_forecast_on else 'WAITING' }}, Done Today: {{ 'YES' if completed_today else 'NO' }}, Live Price: {{ exp_price | round(1) }}c/kWh (Req: >= {{ soak_min_price | round(1) }}c/kWh), Live SOC: {{ soc }}% (Req: > {{ soak_target_soc | int(20) }}%)
@@ -202,7 +215,7 @@ views:
                 * *Values:* Live SOC: {{ soc }}% (Req: >= {{ t3_exp_soc }}%), Live Price: {{ exp_price | round(1) }}c/kWh (Req: >= {{ t3_exp_price | round(1) }}c/kWh)
               * **11. Predictive Import Hold**
                 * *Status:* {% if hold_imp_active %}🛑 **HOLDING**{% else %}⚪ False{% endif %}
-                * *Values:* 12h Forecast Min: {{ min_imp_12h | round(1) }}c/kWh (Holds if import tier met and forecast <= {{ pred_imp_thresh | round(1) }}c/kWh, Override at {{ pred_imp_override | round(1) }}c/kWh)
+                * *Values:* 12h Forecast Min: {{ min_imp_12h | round(1) }}c/kWh (Holds if import tier met, forecast <= {{ pred_imp_thresh | round(1) }}c/kWh and forecast < live - {{ hysteresis | round(1) }}c, Override at {{ pred_imp_override | round(1) }}c/kWh)
               * **12. Import Tier 1**
                 * *Status:* {% if t1_imp %}📥 **MATCHED**{% else %}⚪ False{% endif %}
                 * *Values:* Live SOC: {{ soc }}% (Req: <= {{ t1_imp_soc }}% and < 98%), Live Price: {{ imp_price | round(1) }}c/kWh (Req: <= {{ t1_imp_price | round(1) }}c/kWh)
@@ -298,8 +311,10 @@ views:
                 name: Solar Soak Dispatch Window (24h)
               - type: section
                 label: Solar Forecast & Soak Headroom
-              - entity: sensor.solcast_pv_forecast_forecast_remaining_today
-                name: Solcast Remaining Today Sensor
+              - entity: sensor.solcast_pv_forecast_forecast_today
+                name: Solcast Forecast Today (used before 16:00)
+              - entity: sensor.solcast_pv_forecast_forecast_tomorrow
+                name: Solcast Forecast Tomorrow (used from 16:00)
               - entity: sensor.amber_solcast_10_forecast
                 name: Extracted Solcast 10% Yield (kWh)
               - entity: sensor.amber_average_daytime_house_load

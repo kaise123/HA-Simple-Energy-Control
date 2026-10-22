@@ -23,8 +23,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Aligned `active_action` decision priority to evaluate inverter connectivity ahead of automation enablement
 - Synchronised debug dashboard Priority Evaluation Hierarchy numbering with engine decision tree
 - Updated forecast sensor windows and dashboard labels from 1–12h to the next 12 hours
+- Merged the negative import, export/solar soak and import dispatch branches into one forced-dispatch branch driven by a `target_mode` variable, and hoisted the PV switch and grid feed-in limit writes into a single shared step
+- Dispatch rewrites now key off the required inverter mode rather than the status text, so transitions between states sharing a mode (e.g. Export Tier 1 → Solar Soak) no longer resend the dispatch
+- Mode changes while a dispatch is active skip the duration toggle, since the AlphaESS integration already re-dispatches on mode change
+- Keep-alive refresh threshold raised from 45 to 50 minutes; the under-5-minutes-remaining timer trigger still guarantees a refresh before expiry
+- Curtailment now requires a full battery only to enter; once curtailed it holds until feed-in recovers past the price hysteresis, stopping curtail/idle cycling when the battery-full flag flickers
+- Predictive export and import holds now also require the forecast extreme to beat the live price by more than the price hysteresis, so a spike or drop already in progress is no longer held back
+- Pre-parsed the Amber feed-in forecast once in `sensor.amber_negative_export_forecast_12h`, replacing about 5,600 nested `as_datetime()` calls per render with timestamp comparisons
+- Removed redundant `enabled`/`inverter_online` and SOC guard checks from per-rule variables and the export branch; `active_action` already enforces them
+- Debug dashboard: added dispatch timer and automation last-triggered rows, and replaced the unused Solcast remaining-today row with the today/tomorrow sensors the engine reads
 
 ### Fixed
+- Stopped the return-to-normal and curtailment branches from pressing the full dispatch reset (a Modbus block write) on every run: the dispatch mode helper is now set back to Normal Mode (5) after a reset, so the mode check no longer passes forever
+- Stopped the engine cancelling itself mid-run when it turns off its own dispatch: the status is written before hardware steps, and the `dispatch_off` trigger only re-arms during an active dispatch state
+- Fixed `sensor.amber_negative_export_forecast_12h` comparing against repeated `now()` calls, which never matched: the live price was ignored and the sensor flipped on/off at each 5-minute price boundary
+- Fixed notification titles for `holding_import` ("Amber Import Initiated!") and `holding_soc_guard` ("Predictive Hold Active")
 - Prevented erroneous grid force-charging and dispatches when inverter is offline or Modbus is disconnected
 - Suppressed Modbus writes and spurious normalisation resets while inverter is unavailable
 - Debounced price and forecast triggers to collapse rapid 5-minute Amber update bursts into a single execution

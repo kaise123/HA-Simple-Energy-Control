@@ -97,7 +97,7 @@ views:
               
               {% if is_state('input_boolean.amber_solar_soak_enabled', 'on') %}✅{% else %}❌{% endif %} **Solar Soak:** Pre-export down to **{{ states('sensor.amber_solar_soak_target_soc') | int(20) }}%** (min floor **{{ states('input_number.amber_soak_min_soc') }}%**) if feed-in is above **{{ states('input_number.amber_soak_min_pre_export_price') }}c/kWh**.
               
-              {% if is_state('input_boolean.amber_curtailment_enabled', 'on') %}✅{% else %}❌{% endif %} **Curtailment:** Halt exports when battery is full if feed-in drops below **{{ states('input_number.amber_curtailment_price_threshold') }}c/kWh**.
+              {% if is_state('input_boolean.amber_curtailment_enabled', 'on') %}✅{% else %}❌{% endif %} **Curtailment:** Halt exports when battery is full if feed-in drops below **{{ states('input_number.amber_curtailment_price_threshold') }}c/kWh**, until feed-in recovers past the price hysteresis.
           - type: entities
             entities:
               - type: section
@@ -216,9 +216,9 @@ views:
               
               **Your Current Active Rules:**
               
-              {% if is_state('input_boolean.amber_predictive_export_hold', 'on') %}✅{% else %}❌{% endif %} **Export Hold:** Pause exports if 12h forecast exceeds **{{ states('input_number.amber_export_forecast_threshold') }}c/kWh** (released if live price is above **{{ states('input_number.amber_export_absolute_override') }}c/kWh**).
+              {% if is_state('input_boolean.amber_predictive_export_hold', 'on') %}✅{% else %}❌{% endif %} **Export Hold:** Pause exports if 12h forecast exceeds **{{ states('input_number.amber_export_forecast_threshold') }}c/kWh** and beats the live price (released if live price is above **{{ states('input_number.amber_export_absolute_override') }}c/kWh**).
               
-              {% if is_state('input_boolean.amber_predictive_import_hold', 'on') %}✅{% else %}❌{% endif %} **Import Hold:** Pause charging if 12h forecast drops below **{{ states('input_number.amber_import_forecast_threshold') }}c/kWh** (released if live price is below **{{ states('input_number.amber_import_absolute_override') }}c/kWh**).
+              {% if is_state('input_boolean.amber_predictive_import_hold', 'on') %}✅{% else %}❌{% endif %} **Import Hold:** Pause charging if 12h forecast drops below **{{ states('input_number.amber_import_forecast_threshold') }}c/kWh** and beats the live price (released if live price is below **{{ states('input_number.amber_import_absolute_override') }}c/kWh**).
           - type: entities
             entities:
               - type: section
@@ -305,7 +305,7 @@ views:
               - **Solar Headroom:** Calculates required capacity as `((Solcast 10% kWh × Weight) - Average Daytime Load) / Battery Capacity kWh × 100`.
               - **Pre-Export Target:** Pre-discharges down to `Max Target SOC - Required Headroom %` (protected by your Minimum SOC Floor).
               - **Dynamic Timing:** Automatically finds the most profitable discharge window based on your Inverter Power Limit.
-              - **Negative Curtailment:** Automatically halts exports when live feed-in price drops below the configured threshold and the battery is full.
+              - **Negative Curtailment:** Automatically halts exports when live feed-in price drops below the configured threshold and the battery is full, and keeps them halted until the price recovers past the hysteresis buffer.
               
               ---
               
