@@ -1,4 +1,5 @@
-.agents/rules/ha-rules.md
 scratch/
 LocalOnly/
 .venv/
+.claude/settings.local.json
+CLAUDE.local.md
