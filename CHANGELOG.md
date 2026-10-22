@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-22
+
 ### Added
 - `sensor.amber_engine_decision`: the engine fires an `amber_engine_evaluated` event on every run, and this trigger-based sensor stores the decision, its inputs, the inverter targets and a per-rule classification (🟢 active, 🟡 held only by exit hysteresis, 🔵 met but outranked, 🟠 blocked by a hold or guard, ⚪ not met, ⚫ off). Each rule includes the conditions it checked with actual, entry and exit values, a plain-English summary, and a `sync` self-check against the engine's booleans
 - Entry-only `neg_import_raw` and `curtailment_raw` engine variables (diagnostic only), so hysteresis-held negative import and curtailment can be identified
