@@ -1,65 +1,51 @@
 # HA Simple Energy Control
 
-An automated energy management package for Home Assistant. This project controls an AlphaESS battery system using live and forecasted wholesale electricity prices from Amber Electric and solar generation forecasts from Solcast. It uses multi-tier State of Charge (SOC) rules, predictive 12-hour price forecasting, predictive solar soaking, negative price curtailment, and Modbus dispatch controls to optimise battery charging during low/negative-price periods and grid exporting during high-price events.
+A Home Assistant package that runs an AlphaESS home battery against Amber Electric's wholesale prices. It charges from the grid when power is cheap or negative, exports when prices spike, makes room in the battery before a negative-price solar day, and stops exporting when feed-in goes negative. Solcast solar forecasts drive the solar-day planning.
 
-This can easily be adapted to work with other battery systems and energy providers — but in this state is set up for AlphaESS and Amber Electric.
+It is set up for AlphaESS (local Modbus) and Amber Electric, but the logic is plain Home Assistant YAML and can be adapted to other batteries and retailers.
+
+![Overview dashboard](docs/dashboard-overview.png)
 
 ## Features
 
-* **Multi-Tier Export and Import Rules:** Define price thresholds that adjust dynamically based on current battery capacity. For example, configure the system to export at 20c/kWh when SOC is >80%, but require 100c/kWh when SOC is <30%.
-* **Predictive Solar Soaking (Pre-Exporting):** Anticipates upcoming midday negative feed-in periods. When Solcast forecasts high solar generation that will exceed battery capacity during negative prices, the system pre-discharges the battery during the morning positive-price window down to a calculated target SOC, creating headroom to soak 100% of solar generation locally.
-* **Negative Feed-in Price Curtailment:** Automatically halts exports and resets the inverter to Normal self-consumption mode when feed-in prices drop below your configured threshold (e.g. ≤ 0c/kWh), preventing costly negative export penalties.
-* **Negative Import Price (Mode 7 & PV Disable):** When general import prices drop below your configured threshold (e.g. ≤ 0c/kWh), the system automatically disables the PV switch helper and commands the inverter to **Maximise Consumption (Mode 7)** to draw full power purely from the grid, taking maximum financial advantage of negative tariffs.
-* **Optimised Grid Charging:** When import prices drop below your threshold, the system activates AlphaESS **Optimise Consumption (Mode 6)** — which force-charges the battery at full power from the grid while PV output also contributes.
-* **Predictive Holds:** Evaluates the next 12 hours of Amber Express price forecasts. If a significant price spike or drop is anticipated, the system temporarily suspends standard rules to preserve battery capacity for higher returns or lower charging costs.
-* **Hysteresis & Safeguards:** Applies configurable buffers to price and SOC thresholds to prevent rapid mode toggling, with dedicated minimum SOC floors for both standard exporting and solar soak pre-exporting.
-* **State-Based Notifications:** Triggers mobile push notifications exactly once per state transition, dynamically including context like target SoC, limits, and live pricing to reduce alert fatigue while maximizing visibility.
-* **Custom Lovelace Dashboards:** Provides a consolidated `dashboard.yaml` interface for status tracking, live power flows, and solar soaking tuning. Also includes a dedicated `debug_dashboard.yaml` featuring an automation activity logbook, a logic "Why Was This Choice Made?" inspector, and interactive simulation recipes.
-
----
-
-![HA Simple Energy Control Dashboard](docs/dashboard.png)
+* **Tiered export and import rules.** Up to three export tiers and two import tiers, each with its own SOC and price threshold. For example: export at 20c/kWh when the battery is above 80%, but only at 100c/kWh when it is above 30%.
+* **Predictive solar soak.** When Solcast forecasts more solar than the house will use, the battery is pre-exported overnight or early morning, in the best-paying window, down to a calculated target SOC. That leaves room to soak up the midday solar instead of exporting it at a negative price.
+* **Negative feed-in curtailment.** When the battery is full and feed-in drops to or below your threshold, exports are stopped (grid export limit set to 0) until the price recovers.
+* **Negative import price.** When the import price drops to or below your threshold, PV is switched off and the inverter draws from the grid (Mode 7), so you are paid to consume.
+* **Grid charging.** When import is cheap and the battery is low, the battery force-charges from the grid at full power (Mode 6).
+* **Predictive holds.** Looks 12 hours ahead in Amber's forecast and holds off exporting (or charging) when a clearly better price is coming, unless the live price is already extreme.
+* **Hysteresis and safeguards.** Separate price and SOC buffers stop the system flapping near a threshold, and an export SOC guard sets a hard floor for discharging.
+* **Explains every decision.** Each engine run publishes `sensor.amber_engine_decision`, which records what was chosen, the values used, and for every rule whether it was chosen, held by hysteresis, outranked, blocked or not met, with each condition it checked.
+* **Notifications.** One push notification per state change, with the relevant price and SOC.
+* **Dashboards.** A daily-use dashboard and a diagnostics dashboard (see [Dashboards](#dashboards)).
 
 ---
 
 ## Prerequisites
 
-Before installing, ensure the following integrations and frontend components are already installed and configured:
-
 ### Integrations
 
-1. **[Amber Express](https://github.com/hass-energy/amber-express) (≥ v2.0)**: A HACS custom integration for Amber Electric customers. Install via HACS by adding `https://github.com/hass-energy/amber-express` as a custom repository (Integration type). Configure with your Amber API token.
+1. **[Amber Express](https://github.com/hass-energy/amber-express) (v2.0 or later)**, installed from HACS as a custom repository (type: Integration) and configured with your Amber API token.
 
-   > **Note:** This project requires the **Amber Express** custom integration, *not* the built-in Home Assistant Amber Electric integration. Amber Express provides enhanced polling, real-time WebSocket support, and the forecast attributes this package depends on.
+   > This package needs **Amber Express**, not the built-in Amber Electric integration. Amber Express provides the forecast attributes the predictive features use.
 
-   Provides:
-   - `sensor.amber_express_<sitename>_general_price` — live import price
-   - `sensor.amber_express_<sitename>_feed_in_price` — live feed-in price
+   Provides `sensor.amber_express_<sitename>_general_price` (import) and `sensor.amber_express_<sitename>_feed_in_price` (feed-in).
 
-2. **[Solcast Solar](https://github.com/BJReplay/ha-solcast-solar)**: A HACS integration providing solar generation forecasts.
-   
-   Provides:
-   - `sensor.solcast_pv_forecast_forecast_remaining_today` (with `estimate10` or `pv_estimate10` conservative forecast attributes).
+2. **[Solcast Solar](https://github.com/BJReplay/ha-solcast-solar)** from HACS. The package reads the conservative P10 forecast (`estimate10` / `pv_estimate10`) from `sensor.solcast_pv_forecast_forecast_today` before 16:00 and `sensor.solcast_pv_forecast_forecast_tomorrow` from 16:00, falling back to the remaining-today sensor.
 
-3. **[AlphaESS Modbus (hillviewlodge.ie/alphaess)](https://projects.hillviewlodge.ie/alphaess/)**: AlphaESS inverter configured for local Modbus TCP control. Provides the helper entities used to trigger dispatch modes:
-   - `input_select.alphaess_helper_dispatch_mode` — dispatch mode selector
-   - `input_number.alphaess_helper_dispatch_duration` — dispatch duration timer
-   - `input_boolean.alphaess_helper_dispatch` — dispatch execution trigger
-   - `input_boolean.alphaess_helper_dispatch_pv_switch` — PV switch helper (disabled during negative import)
-   - `input_number.alphaess_helper_max_feed_to_grid` — grid feed limit helper (set to 0 during curtailment)
-   - `input_button.alphaess_helper_dispatch_reset_full` — full hardware reset button
-   - `timer.alphaess_helper_dispatch_timer` — hardware dispatch duration timer
-   - `sensor.alphaess_soc_battery` — live battery state of charge
-   - `sensor.alphaess_battery_full` — battery full indicator (gates curtailment)
-   - `sensor.alphaess_inverter_work_mode` — inverter work mode sensor (monitors communication health)
+3. **[AlphaESS Modbus](https://projects.hillviewlodge.ie/alphaess/)** (hillviewlodge.ie), with the inverter set up for local Modbus TCP control. The package uses these entities from it:
+   - `sensor.alphaess_soc_battery`, `sensor.alphaess_battery_full`, `sensor.alphaess_inverter_work_mode`
+   - `input_select.alphaess_helper_dispatch_mode`, `input_number.alphaess_helper_dispatch_duration`, `input_boolean.alphaess_helper_dispatch`, `timer.alphaess_helper_dispatch_timer`
+   - `input_boolean.alphaess_helper_dispatch_pv_switch` (turned off during negative import)
+   - `input_number.alphaess_helper_max_feed_to_grid` (set to 0 during curtailment)
+   - `input_button.alphaess_helper_dispatch_reset_full`
 
-4. **Home Energy Monitor**: A monitor reporting site consumption (e.g. a Shelly EM). Provides `sensor.shelly_ct1_energy` (cumulative kWh used by `utility_meter.amber_house_load_split` for 7-day daytime house load averaging) and `sensor.shelly_ct1_power` (live power in W used by the dashboard).
+4. **A home energy monitor** such as a Shelly EM: `sensor.shelly_ct1_energy` (kWh, for the 7-day daytime load average) and `sensor.shelly_ct1_power` (W, for the dashboard).
 
-5. **Mobile App**: A `notify.mobile_app_<devicename>` notification service. Update the device name in the package file's USER CONFIGURATION section.
+5. **The Mobile App integration**, for `notify.mobile_app_<devicename>`.
 
-### Frontend Cards (HACS)
+### Dashboard cards (HACS)
 
-The dashboard requires these custom Lovelace cards:
 * [`power-flow-card-plus`](https://github.com/flixlix/power-flow-card-plus)
 * [`apexcharts-card`](https://github.com/RomRider/apexcharts-card)
 
@@ -67,130 +53,152 @@ The dashboard requires these custom Lovelace cards:
 
 ## Installation
 
-HA Simple Energy Control is distributed as a native **Home Assistant Package** — a single YAML file that is automatically loaded by HA alongside your main configuration. No custom integrations or Python code required.
+The whole thing is one [Home Assistant package](https://www.home-assistant.io/docs/configuration/packages/) file. No custom integration or Python is needed.
 
-### 1. Enable HA Packages (once only)
+### 1. Enable packages (once)
 
-If you haven't already, add the following to your `configuration.yaml`:
+Add this to `configuration.yaml` if you haven't already:
 
 ```yaml
 homeassistant:
   packages: !include_dir_named packages
 ```
 
-This tells Home Assistant to automatically load any `.yaml` file placed in the `packages/` folder inside your HA config directory.
-
-> **Already using packages?** If you already have a `packages:` block, use a named include to avoid conflicts:
+> **Already using packages?** Add this one by name instead:
 > ```yaml
 > homeassistant:
 >   packages:
 >     ha_simple_energy_control: !include packages/ha_simple_energy_control.yaml
 > ```
 
-### 2. Copy the Package File
+### 2. Copy the package
 
-Copy [`packages/ha_simple_energy_control.yaml`](packages/ha_simple_energy_control.yaml) from this repository into the `packages/` folder in your Home Assistant config directory.
+Copy [`packages/ha_simple_energy_control.yaml`](packages/ha_simple_energy_control.yaml) into the `packages/` folder of your Home Assistant config directory.
 
-### 3. Update the USER CONFIGURATION Section
+### 3. Set your entity names
 
-Open `ha_simple_energy_control.yaml` and review the **USER CONFIGURATION** block near the top of the file. It lists every entity ID and service name that may need updating for your environment:
+The **USER CONFIGURATION** block at the top of the file lists every external entity and service. Entity IDs are written out in full throughout the file, so if yours differ, find-and-replace them across the whole file (and the dashboards). The ones most likely to differ:
 
-| What | Default value | Where to find yours |
+| What | Default | Where to find yours |
 |---|---|---|
-| Import price sensor | `sensor.amber_express_home_general_price` | Settings → Devices & Services → Amber Express |
-| Feed-in price sensor | `sensor.amber_express_home_feed_in_price` | Settings → Devices & Services → Amber Express |
-| Solcast remaining sensor | `sensor.solcast_pv_forecast_forecast_remaining_today` | Settings → Devices & Services → Solcast Solar |
-| Battery SOC sensor | `sensor.alphaess_soc_battery` | Settings → Devices & Services → Entities (Or in your battery integration) |
-| Battery full sensor | `sensor.alphaess_battery_full` | Settings → Devices & Services → Entities (Or in your battery integration) |
-| Inverter work mode sensor | `sensor.alphaess_inverter_work_mode` | Settings → Devices & Services → Entities (Or in your battery integration) |
-| Dispatch mode select | `input_select.alphaess_helper_dispatch_mode` | Settings → Devices & Services → Entities (Or in your battery integration) |
-| Dispatch duration | `input_number.alphaess_helper_dispatch_duration` | Settings → Devices & Services → Entities (Or in your battery integration) |
-| Dispatch trigger | `input_boolean.alphaess_helper_dispatch` | Settings → Devices & Services → Entities (Or in your battery integration) |
-| Dispatch PV switch | `input_boolean.alphaess_helper_dispatch_pv_switch` | Settings → Devices & Services → Entities (Or in your battery integration) |
-| Max feed to grid limit | `input_number.alphaess_helper_max_feed_to_grid` | Settings → Devices & Services → Entities (Or in your battery integration) |
-| Reset button | `input_button.alphaess_helper_dispatch_reset_full` | Settings → Devices & Services → Entities (Or in your battery integration) |
-| Dispatch timer | `timer.alphaess_helper_dispatch_timer` | Settings → Devices & Services → Entities (Or in your battery integration) |
-| House load energy sensor | `sensor.shelly_ct1_energy` | Settings → Devices & Services → Entities (Or in your energy monitor) |
-| House load power sensor | `sensor.shelly_ct1_power` | Settings → Devices & Services → Entities (Or in your energy monitor) |
-| Mobile notifications | `notify.mobile_app_phone` | Settings → Devices & Services → Mobile App |
+| Import price | `sensor.amber_express_home_general_price` | Settings → Devices & Services → Amber Express |
+| Feed-in price | `sensor.amber_express_home_feed_in_price` | Settings → Devices & Services → Amber Express |
+| Solcast forecast | `sensor.solcast_pv_forecast_forecast_today` / `_tomorrow` | Settings → Devices & Services → Solcast Solar |
+| House energy / power | `sensor.shelly_ct1_energy` / `sensor.shelly_ct1_power` | Your energy monitor |
+| Notifications | `notify.mobile_app_phone` | Settings → Devices & Services → Mobile App |
+
+The AlphaESS entities listed under Prerequisites only need changing if your integration names them differently.
 
 ### 4. Restart Home Assistant
 
-Go to **Settings → System → Restart**. After restarting, all helpers, template sensors, and the automation will be active.
+**Settings → System → Restart.** All helpers, sensors and automations are created on restart.
 
-### 5. Configure the Dashboards (manual)
+### 5. Add the dashboards
 
-`dashboard.yaml` is a three-view dashboard for daily use (**Overview**: status, the reason for it, and rule toggles; **Rules**: each rule's live result and thresholds; **Tuning**: the soak model, hysteresis, safeguards and manual inverter control). `debug_dashboard.yaml` provides diagnostics and simulation tools. Both read `sensor.amber_engine_decision`, which the engine publishes on every run, so they always show the decision the engine actually made and the reason for it. They must be applied to the **root** of a dashboard — not to a single view inside one.
+Each file is a complete dashboard and goes at the **root** of a dashboard, not inside a view.
 
-**Option A — New Dashboards (recommended):**
-1. Go to **Settings → Dashboards** and click **Add Dashboard**.
-2. Name it (e.g. *Energy Management*) and click **Create**. Open the new dashboard.
-3. Enter Edit mode (pencil icon) → options menu (⋮) → **Raw Configuration Editor**.
-4. **Replace** the entire default content with the contents of [`dashboard.yaml`](dashboard.yaml).
-5. Click **Save**.
-6. Repeat steps 1-5 for `debug_dashboard.yaml` (e.g. naming it *Energy Diagnostics*).
+1. **Settings → Dashboards → Add Dashboard**, name it (e.g. *Energy Management*) and open it.
+2. Edit (pencil) → ⋮ → **Raw configuration editor**.
+3. Replace everything with the contents of [`dashboard.yaml`](dashboard.yaml) and save.
+4. Repeat with [`debug_dashboard.yaml`](debug_dashboard.yaml) for a second dashboard (e.g. *Energy Diagnostics*).
+5. On the diagnostics dashboard, press **Re-evaluate Logic Now** once so the decision sensor has its first value (otherwise it fills in within 15 minutes).
 
-**Option B — Add views to an existing dashboard:**
-1. Open your existing dashboard and enter Edit mode.
-2. Open the Raw Configuration Editor (⋮ menu).
-3. Under the existing `views:` key, append the view blocks from `dashboard.yaml` (everything indented under `views:`).
-4. Click **Save**.
+To add the views to an existing dashboard instead, paste the entries under `views:` into that dashboard's `views:` list.
+
+### Updating
+
+Replace the package file and restart, then replace both dashboards' contents the same way. Check [CHANGELOG.md](CHANGELOG.md) for anything that needs attention.
 
 ---
 
-## Usage Guide
+## Dashboards
 
-### Predictive Solar Soaking
+### Energy Management (`dashboard.yaml`)
 
-Wholesale electricity prices often plunge into negative territory during midday peak solar generation hours. When this occurs, exporting excess solar costs you money.
+* **Overview** shows the current status and *why*, quick on/off tiles for every rule, live power flow, Amber prices, a 24-hour history of what the engine did against battery SOC, forecast tiles, and the most-used thresholds with +/- buttons.
+* **Rules** shows each rule group with its live result (coloured dot and a one-line reason), its toggle and its thresholds together.
+* **Tuning** holds the solar soak model, hysteresis and safeguards, and manual inverter control.
 
-The **Predictive Solar Soak** feature solves this proactively:
-1. It monitors Amber Express feed-in price forecasts for upcoming negative intervals (≤ 0c/kWh).
-2. It calculates expected excess solar yield using Solcast's conservative 10% forecast (`estimate10` / `pv_estimate10`) scaled by your forecast weight, deducting your 7-day average daytime house load (`sensor.amber_average_daytime_house_load`) to determine the net solar energy that will charge the battery.
-3. It derives a **Soak Target SOC** indicating how much battery capacity must be made available to soak up net solar generation during the negative pricing window.
-4. It scans candidate discharge windows overnight and in the early morning before the 10:30 AM cutoff (or earlier if negative prices begin before 10:30) to find the highest-paying export tariff window.
-5. During this optimal window, the system engages **Mode 4 (Maximise Output)** to pre-discharge the battery down to the target SOC.
-6. Once discharged, the battery sits ready to absorb 100% of solar generation when negative prices hit.
+### Energy Diagnostics (`debug_dashboard.yaml`)
 
-### Negative Price Curtailment
+![Diagnostics dashboard](docs/dashboard-debug.png)
 
-If feed-in prices turn negative and the battery is full (`sensor.alphaess_battery_full`), **Negative Price Curtailment** immediately halts all grid exporting by setting `input_number.alphaess_helper_max_feed_to_grid` to `0` and returning the inverter to **Normal Mode (Mode 5)**. This prioritises household self-consumption and battery charging while protecting against paying export tariffs. When feed-in prices recover, the export limit is automatically restored to 100%.
+* **Engine Decision** shows the last decision, when and why it ran, and warnings if the decision is stale, inputs changed without a re-run, the status helper disagrees, or the inverter helpers don't match what the engine asked for.
+* **Priority walk-through** lists every rule in the order the engine checks them, with its result and reason.
+* **Why each rule was or wasn't met** expands each rule into every condition it checked, showing the actual value against the entry and exit thresholds.
+* **Solar Soak Inspector** shows how the frozen target SOC was calculated, and what it would be if recalculated now.
+* **Scenario Simulator** has step-by-step recipes for forcing each mode to test it.
 
-### Negative Import Price (Grid Drawing)
+Rule results use these markers:
 
-When electricity import prices turn negative (at or below your configured threshold), the system automatically engages **Mode 7 (Maximise Consumption)** and disables the solar PV array via `input_boolean.alphaess_helper_dispatch_pv_switch`. This causes all household loads to draw purely from the grid at maximum negative rates, ensuring you get paid to consume grid energy.
-
-### Setting Tiers
-
-The automation evaluates rules in descending priority from Tier 1 to Tier 3.
-
-* **Exporting:** When feed-in price and SOC conditions are met, the automation activates **Maximise Output (Mode 4)**, discharging the battery to the grid at maximum power.
-* **Importing:** When import prices drop below your threshold, the automation activates **Optimise Consumption (Mode 6)**. The battery force-charges at full power from the grid while PV output also contributes.
-
-### Predictive Holds
-
-When enabled, the system evaluates the `forecasts` attribute of the Amber Express price sensors 12 hours ahead. For example, if a Tier 1 rule is set to export at 30c/kWh, but the forecast shows a 150c/kWh peak later in the day, the system blocks immediate export to preserve battery capacity — provided the forecasted peak exceeds your configured predictive threshold.
-
-### Dispatch Duration and Failsafe
-
-Each time the automation sends a dispatch command to the inverter, it sets a **60-minute hardware duration** as a failsafe. To prevent the hardware timer from expiring during long export/import sessions, a **45-minute keep-alive** mechanism continuously refreshes the timer as long as conditions are met, minimising unnecessary Modbus writes while ensuring continuous operation. Additionally, a 15-minute `time_pattern` trigger acts as a supplementary safety check.
-
-### Manual Overrides
-
-The Master Automation Switch disables all automation logic. Manual controls at the bottom of the dashboard can then be used to select specific dispatch modes directly. Clicking **Reset to Normal Mode** returns the inverter to standard self-consumption.
+| | Meaning |
+|:-:|---|
+| 🟢 | Chosen |
+| 🟡 | Chosen, but only held by its exit hysteresis (entry is no longer met) |
+| 🔵 | Conditions met, but a higher-priority rule won |
+| 🟠 | Entry met, but blocked by a predictive hold or the SOC guard |
+| ⚪ | Conditions not met |
+| ⚫ | Switched off |
+| 🟣 | Hold armed, but nothing to hold |
 
 ---
 
-## Dispatch Modes Reference
+## How it decides
 
-Only relevant for AlphaESS batteries connected via the hillviewlodge.ie/alphaess integration.
+The engine re-evaluates on every price, SOC or forecast change, whenever a setting changes, and every 15 minutes. It checks rules in this order and acts on the first that applies:
 
-| Mode | Label | Behaviour |
+1. Inverter offline: do nothing until communication returns
+2. Master switch off: return to Normal and stop
+3. Negative import price
+4. Negative feed-in curtailment
+5. Predictive export hold
+6. Solar soak pre-export
+7. Export SOC guard
+8. Export tiers 1, 2, 3
+9. Predictive import hold
+10. Import tiers 1, 2
+11. Otherwise: Normal self-consumption
+
+**Hysteresis.** A rule turns on as soon as its threshold is crossed, but once active it stays on until the value moves past the threshold by the buffer. With a 3c price buffer, an export tier set at 40c starts at 40c and stops below 37c. The SOC buffer works the same way for SOC thresholds.
+
+### Solar soak
+
+1. At 00:01, 06:00 and 16:05 (and whenever a soak setting changes), the package works out a **soak target SOC**: the solar it expects to reach the battery (Solcast P10 × your forecast weight, minus your 7-day average daytime house load) is converted to battery percentage and subtracted from your maximum target SOC, within your minimum floor.
+2. If the battery is above that target, it looks for the best-paying window to discharge in before 10:30, or before feed-in is forecast to drop to your curtailment price if that is earlier, allowing enough time at your inverter's power.
+3. In that window, and only while feed-in is at or above your minimum pre-export price, it discharges at Maximise Output (Mode 4) until the target is reached, then marks soak as done for the day.
+
+### Curtailment
+
+When the battery is full and feed-in is at or below your curtailment price, the grid export limit is set to 0 and the inverter stays in Normal mode, so solar still covers the house and tops up the battery. Curtailment continues (even if the battery-full flag flickers) until feed-in rises above the threshold plus the price buffer, then the export limit returns to 100%.
+
+### Negative import
+
+When import is at or below your negative-import price, PV is switched off and the inverter charges from the grid at Maximise Consumption (Mode 7). PV is switched back on when the price recovers.
+
+### Predictive holds
+
+An export hold applies when the 12-hour forecast maximum is at or above your hold threshold **and** higher than the live price plus the price buffer, so a spike that is already happening is not held back waiting for itself. A live price above your release level always overrides it. The import hold works the same way for forecast lows. Holds only show as active when a rule they guard would otherwise have acted.
+
+### Dispatch keep-alive
+
+Every forced dispatch is sent with a 60-minute duration on the inverter as a failsafe. While the same mode is still wanted, the engine refreshes it after 50 minutes (and in any case once fewer than 5 minutes remain), and it writes nothing to the inverter while nothing has changed.
+
+### Manual control
+
+Turn the **Master Automation** switch off, then use **Tuning → Manual Inverter Control** to pick a dispatch mode yourself. **Reset to Normal Mode** returns the inverter to self-consumption. While the master switch is on, the engine overwrites manual changes on its next run.
+
+---
+
+## Dispatch modes
+
+For AlphaESS batteries on the hillviewlodge.ie integration:
+
+| Mode | Name | Used for |
 |---|---|---|
-| 4 | Maximise Output | Forces battery discharge; maximises power exported to the grid (used for price spikes and solar soak pre-exporting) |
-| 5 | Normal | Standard self-consumption (the reset & curtailment target) |
-| 6 | Optimise Consumption | Force-charges battery at full power from the grid; PV also contributes (used for cheap imports) |
-| 7 | Maximise Consumption | Serves house load entirely from the grid; used with PV disabled during negative import tariffs |
+| 4 | Maximise Output | Discharging to the grid: export tiers and solar soak |
+| 5 | Normal | Self-consumption: idle, holds, curtailment and resets |
+| 6 | Optimise Consumption | Charging from the grid at full power, PV still contributing: import tiers |
+| 7 | Maximise Consumption | Charging from the grid with PV switched off: negative import |
 
 ---
 
